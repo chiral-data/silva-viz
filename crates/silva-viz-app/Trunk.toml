@@ -6,6 +6,10 @@ dist = "dist"
 ignore = ["dist"]
 
 [serve]
-address = "127.0.0.1"
+# All interfaces, so the dev build can be opened from another machine — a
+# phone, a tablet, or a workstation that is not the one compiling it. This is
+# an unauthenticated development server: it should only ever be run on a
+# network you trust.
+addresses = ["0.0.0.0"]
 port = 8080
 open = false
