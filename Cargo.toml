@@ -1,0 +1,31 @@
+[workspace]
+# A glob rather than a list: the chemistry viewers arrive as a third crate in
+# v0.2.0, and a members list is one more place to forget.
+members = ["crates/*"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MPL-2.0"
+repository = "https://github.com/chiral-data/silva-viz"
+
+[workspace.dependencies]
+# Pinned to the same versions the sibling cheminformatics workspace uses. Its
+# depiction layer is typed in `emath`/`ecolor`, so matching versions is what
+# will let the v0.2.0 chemistry viewer plug in with no conversion code.
+egui = { version = "0.33.3", features = ["persistence"] }
+eframe = { version = "0.33.3", features = ["persistence"] }
+egui_extras = { version = "0.33.3", features = ["image"] }
+emath = "0.33.3"
+ecolor = "0.33.3"
+
+anyhow = "1.0"
+thiserror = "2.0.17"
+serde = { version = "1.0", features = ["derive"] }
+log = "0.4.0"
+env_logger = "0.11.8"
+rfd = "0.16"
+pollster = "0.4.0"
+
+silva-viz-core = { path = "./crates/silva-viz-core" }

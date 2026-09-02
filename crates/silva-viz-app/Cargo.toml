@@ -1,0 +1,34 @@
+[package]
+name = "silva-viz-app"
+description = "A file browser for scientific applications: open any file in its own floating viewer."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+# A GUI binary, not a library. Excluded from the registry explicitly rather
+# than by omission from a publish command.
+publish = false
+
+[[bin]]
+name = "silva-viz"
+path = "src/main.rs"
+
+[dependencies]
+silva-viz-core = { workspace = true }
+egui = { workspace = true }
+eframe = { workspace = true }
+egui_extras = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+log = { workspace = true }
+rfd = { workspace = true }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+env_logger = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2.100"
+wasm-bindgen-futures = "0.4.0"
+console_error_panic_hook = "0.1"
+web-sys = { version = "0.3.77", features = ["Document", "Element", "HtmlCanvasElement", "Window"] }

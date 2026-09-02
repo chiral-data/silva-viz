@@ -1,0 +1,155 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  # Milestone integration branches (v010, v020, ...) as well as main. Story
+  # PRs merge into those, and unchecked they would let a break sit
+  # unattributed behind ten merged PRs. Deliberately not added to `push`: a
+  # merge into the branch would re-run the identical commit the PR just
+  # checked.
+  pull_request:
+    branches: [main, 'v[0-9]*']
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  test:
+    name: Test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        # Anything aimed at main gets the full three-OS sweep. A story PR into
+        # a milestone branch gets Linux only: a milestone lands ten-odd small
+        # PRs, and paying for Windows and macOS on each is what the
+        # milestone's own PR into main is for. The cost is that a
+        # platform-specific break surfaces at the end of the milestone rather
+        # than in the PR that caused it — but it cannot reach main unnoticed.
+        os: >-
+          ${{ (github.base_ref == 'main' || github.ref_name == 'main')
+          && fromJSON('["ubuntu-latest", "windows-latest", "macos-latest"]')
+          || fromJSON('["ubuntu-latest"]') }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Run tests
+        run: cargo test --workspace --all-features
+
+      - name: Run doctests
+        run: cargo test --doc --workspace --all-features
+
+  invariants:
+    name: Invariants
+    runs-on: ubuntu-latest
+    # Two properties this milestone claims, neither of which any test asserts.
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      # v0.1.0 is the generic shell. Chemistry arrives in v0.2.0 as a separate
+      # crate behind the viewer registry, and this is what stops it arriving
+      # early and quietly.
+      - name: The shell knows nothing about chemistry
+        run: |
+          if cargo tree -e normal | grep -qi 'chem'; then
+            echo "::error::the v0.1.0 shell must not depend on a chemistry crate"
+            cargo tree -e normal | grep -i 'chem'
+            exit 1
+          fi
+
+      # Not a rule, a tripwire. 334 is what an eframe app plus an image
+      # decoder costs today; a jump means something arrived that nobody chose,
+      # and the number in the message is the one to re-measure and update.
+      - name: The dependency tree has not quietly grown
+        run: |
+          count=$(cargo tree -e normal --prefix none | sort -u | wc -l)
+          echo "unique dependencies: $count"
+          if [ "$count" -gt 360 ]; then
+            echo "::error::dependency count $count exceeds the recorded ceiling of 360 (was 334)"
+            exit 1
+          fi
+
+      # rfd's async dialog is completed by a callback that only the platform's
+      # main run loop delivers, so blocking on it from the thread that owns
+      # that loop deadlocks the app (#4). No Linux test can reproduce that —
+      # its portal backend is self-driving — so the guard is textual: the
+      # native build uses the synchronous dialog, and the one async use site is
+      # the wasm arm, which never blocks anything.
+      - name: The async file dialog is used only on wasm
+        run: |
+          n=$(git grep -c 'AsyncFileDialog' -- crates | awk -F: '{s+=$2} END {print s+0}')
+          echo "AsyncFileDialog use sites: $n"
+          if [ "$n" -ne 1 ]; then
+            echo "::error::AsyncFileDialog should appear once (the wasm arm), found $n"
+            git grep -n 'AsyncFileDialog' -- crates
+            exit 1
+          fi
+
+      # This repo is public. Naming a private one here leaks its existence, and
+      # a notes path is meaningless to everyone but its author.
+      - name: No private repository or local notes references
+        run: |
+          if git grep -nEi 'silva-viz-tauri|chiral-backend|learning-notes' -- . ':!.github/workflows/ci.yml'; then
+            echo "::error::a public repository must not reference a private one"
+            exit 1
+          fi
+
+  docs:
+    name: Documentation
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build docs
+        run: cargo doc --no-deps --workspace --all-features
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  web:
+    name: Web (WASM) build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy
+
+      - name: Clippy (wasm32)
+        run: cargo clippy -p silva-viz-app --target wasm32-unknown-unknown --all-targets -- -D warnings
+
+      - name: Install trunk
+        uses: taiki-e/install-action@trunk
+
+      - name: Build web bundle
+        working-directory: crates/silva-viz-app
+        run: trunk build --release
