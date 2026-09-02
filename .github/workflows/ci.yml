@@ -93,6 +93,22 @@ jobs:
             exit 1
           fi
 
+      # rfd's async dialog is completed by a callback that only the platform's
+      # main run loop delivers, so blocking on it from the thread that owns
+      # that loop deadlocks the app (#4). No Linux test can reproduce that —
+      # its portal backend is self-driving — so the guard is textual: the
+      # native build uses the synchronous dialog, and the one async use site is
+      # the wasm arm, which never blocks anything.
+      - name: The async file dialog is used only on wasm
+        run: |
+          n=$(git grep -c 'AsyncFileDialog' -- crates | awk -F: '{s+=$2} END {print s+0}')
+          echo "AsyncFileDialog use sites: $n"
+          if [ "$n" -ne 1 ]; then
+            echo "::error::AsyncFileDialog should appear once (the wasm arm), found $n"
+            git grep -n 'AsyncFileDialog' -- crates
+            exit 1
+          fi
+
       # This repo is public. Naming a private one here leaks its existence, and
       # a notes path is meaningless to everyone but its author.
       - name: No private repository or local notes references
