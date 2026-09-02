@@ -3102,7 +3102,6 @@ dependencies = [
  "env_logger",
  "image",
  "log",
- "pollster",
  "rfd",
  "serde",
  "silva-viz-core",

@@ -42,6 +42,23 @@ impl<T: 'static> Task<T> {
     ///
     /// Starting a second task before the first is polled discards the first
     /// result, which is what should happen: it belongs to a superseded request.
+    ///
+    /// # On native, only for a future that polling can advance
+    ///
+    /// The native arm runs `future` to completion on the calling thread, which
+    /// in this app is the one driving the window. That is fine for work that
+    /// makes progress *because* it is polled, and unsound for a future whose
+    /// completion is scheduled on the platform's own run loop: blocking here
+    /// parks the very thread that would have delivered it, and nothing ever
+    /// wakes up.
+    ///
+    /// `rfd`'s async file dialog is the second kind on macOS — it returns
+    /// immediately from `beginSheetModalForWindow:completionHandler:` and is
+    /// completed by AppKit later — and the first kind on Linux, where the
+    /// portal backend is a self-driving D-Bus round trip. Routing it through
+    /// here therefore worked everywhere except a Mac, where it hung the app
+    /// with the panel on screen (#4). Use the platform's own blocking dialog
+    /// for those; it pumps a nested loop of its own.
     pub fn start<F>(&mut self, ctx: &egui::Context, future: F)
     where
         F: Future<Output = T> + 'static,
@@ -57,10 +74,10 @@ impl<T: 'static> Task<T> {
 
         #[cfg(not(target_arch = "wasm32"))]
         {
-            // Native has a modal dialog rather than a promise, so blocking here
-            // stalls only the frame the user spent in the file picker anyway.
-            // The result still waits to be polled, so both platforms follow the
-            // same path and a bug in the collection step cannot hide on one.
+            // See the warning above: this is only correct for a self-driving
+            // future. The result still waits to be polled rather than being
+            // applied inline, so both platforms follow the same path and a bug
+            // in the collection step cannot hide on one of them.
             *slot.borrow_mut() = Some(pollster::block_on(future));
             ctx.request_repaint();
         }

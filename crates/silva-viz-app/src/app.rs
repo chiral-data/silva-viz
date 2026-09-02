@@ -8,9 +8,9 @@ use crate::browser::{Browser, BrowserAction};
 use crate::dnd::{self, Dropped};
 use crate::views;
 use crate::windows::WindowManager;
+use silva_viz_core::{Blob, SharedSource, ViewerRegistry};
 #[cfg(target_arch = "wasm32")]
-use silva_viz_core::MemSource;
-use silva_viz_core::{Blob, SharedSource, Task, ViewerRegistry};
+use silva_viz_core::{MemSource, Task};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -65,6 +65,11 @@ pub struct SilvaVizApp {
     registry: ViewerRegistry,
     browser: Browser,
     windows: WindowManager,
+    /// The web picker is a promise, so its result arrives on a later frame. The
+    /// native one is a modal call that has already returned by the time it is
+    /// handled, and deliberately does not come through here — see
+    /// [`SilvaVizApp::choose_source`].
+    #[cfg(target_arch = "wasm32")]
     picker: Task<Option<Picked>>,
     status: String,
 }
@@ -106,6 +111,7 @@ impl SilvaVizApp {
             registry: default_registry(),
             browser: Browser::new(),
             windows: WindowManager::default(),
+            #[cfg(target_arch = "wasm32")]
             picker: Task::new(),
             status: String::new(),
         };
@@ -163,14 +169,20 @@ impl SilvaVizApp {
         }
     }
 
+    /// Opens the folder picker, blocking until it closes.
+    ///
+    /// Synchronous deliberately, and it must stay that way. `rfd`'s *async*
+    /// dialog completes from a callback that only the platform's main run loop
+    /// can deliver — on macOS, `beginSheetModalForWindow:completionHandler:`.
+    /// Awaiting it from the thread that owns that loop deadlocks the app with
+    /// the panel already on screen (#4). The blocking API runs its own nested
+    /// modal loop instead, so it needs nothing from the frame loop it
+    /// interrupts.
     #[cfg(not(target_arch = "wasm32"))]
-    fn choose_source(&mut self, ctx: &egui::Context) {
-        self.picker.start(ctx, async {
-            rfd::AsyncFileDialog::new()
-                .pick_folder()
-                .await
-                .map(|handle| Picked::Root(handle.path().to_string_lossy().into_owned()))
-        });
+    fn choose_source(&mut self, _ctx: &egui::Context) {
+        if let Some(path) = rfd::FileDialog::new().pick_folder() {
+            self.apply(Picked::Root(path.to_string_lossy().into_owned()));
+        }
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -274,6 +286,7 @@ impl eframe::App for SilvaVizApp {
         // The outer `Some` is "the dialog closed"; the inner is "with a
         // choice". A cancelled dialog is the flattened `None`, and must not be
         // mistaken for one that is still open.
+        #[cfg(target_arch = "wasm32")]
         if let Some(Some(picked)) = self.picker.poll() {
             self.apply(picked);
         }
