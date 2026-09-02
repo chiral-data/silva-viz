@@ -1,0 +1,17 @@
+[package]
+name = "silva-viz-core"
+description = "The seam a scientific file browser is built on: a file source, a viewer registry, and a view."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+egui = { workspace = true }
+thiserror = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+pollster = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen-futures = "0.4.0"
