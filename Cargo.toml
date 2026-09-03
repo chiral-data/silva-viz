@@ -20,6 +20,12 @@ egui_extras = { version = "0.33.3", features = ["image"] }
 emath = "0.33.3"
 ecolor = "0.33.3"
 
+# The cheminformatics library the v0.2.0 viewers are built on: molecule types,
+# SMILES/SDF reading, and a depiction layer that emits drawable primitives
+# rather than widgets. Default features only — `gpu` would pull `wgpu`, which
+# the web build cannot have and no viewer here needs.
+chem = { version = "0.6", default-features = false }
+
 anyhow = "1.0"
 thiserror = "2.0.17"
 serde = { version = "1.0", features = ["derive"] }
@@ -29,3 +35,4 @@ rfd = "0.16"
 pollster = "0.4.0"
 
 silva-viz-core = { path = "./crates/silva-viz-core" }
+silva-viz-chem = { path = "./crates/silva-viz-chem" }

@@ -32,12 +32,20 @@ cd crates/silva-viz-app && trunk serve   # http://127.0.0.1:8080
   lowest priority and pages through the file, so a 3 GB blob opens as fast as a
   3 KB one.
 
-Five viewers ship: metadata, hex, text, delimited table, and image (PNG, JPEG,
-GIF, BMP).
+Six viewers ship: metadata, hex, text, delimited table, image (PNG, JPEG, GIF,
+BMP), and **molecular structures** — an MDL molfile or SDF opens as a drawn
+structure, one record at a time, with its data fields beside it.
+
+The structure viewer is the one exception to "by the bytes, never by the name",
+and only half an exception: a molfile is recognised by its *counts line*, the
+fourth line of every record, so a `.mol`, an `.sdf` and a `.txt` holding a
+molfile all open the same way. SMILES is the format with no magic bytes at all
+— `CCO` is a molecule and also three letters — and when its viewer arrives it
+will have to read the filename, which is documented where it happens.
 
 ## Adding a viewer
 
-A viewer is a `ViewerFactory` and a `View`, and the five built-in ones have no
+A viewer is a `ViewerFactory` and a `View`, and the built-in ones have no
 privileged access to the shell — they are registered exactly the way yours
 would be. See [`docs/viewers.md`](docs/viewers.md); it is about thirty lines.
 
@@ -46,7 +54,12 @@ would be. See [`docs/viewers.md`](docs/viewers.md); it is about thirty lines.
 | crate | what it is |
 | --- | --- |
 | `silva-viz-core` | the seam: `FileSource`, `ViewerFactory`, `View`, `Blob` |
-| `silva-viz-app` | the eframe shell and the five built-in viewers |
+| `silva-viz-app` | the eframe shell and the five format-agnostic viewers |
+| `silva-viz-chem` | the structure viewers, built on [`chem`](https://crates.io/crates/chem) |
+
+`silva-viz-chem` is a downstream crate registered through the same call a
+third-party one would use, and CI pins the other half of that claim:
+`silva-viz-core` still builds with no chemistry crate in its tree.
 
 The browser talks to `FileSource` and never to `std::path::Path`, which is the
 only reason the same panel compiles for the web — where there is no filesystem

@@ -15,6 +15,7 @@ path = "src/main.rs"
 
 [dependencies]
 silva-viz-core = { workspace = true }
+silva-viz-chem = { workspace = true }
 egui = { workspace = true }
 eframe = { workspace = true }
 egui_extras = { workspace = true }
