@@ -332,6 +332,97 @@ mod tests {
             .collect()
     }
 
+    /// Two good records with a data field each, and a broken one between them
+    /// whose counts line promises ten atoms and supplies none.
+    fn mixed_file() -> String {
+        let good = |name: &str, activity: &str| {
+            format!(
+                "{name}\n  chem\n\n  3  2  0  0  0  0  0  0  0  0999 V2000\n    0.0000    0.0000    0.0000 C   0  0\n    1.2990    0.7500    0.0000 C   0  0\n    2.5981    0.0000    0.0000 O   0  0\n  1  2  1  0\n  2  3  1  0\nM  END\n> <ACTIVITY>\n{activity}\n\n$$$$\n"
+            )
+        };
+        let broken = "broken\n  chem\n\n 10  9  0  0  0  0  0  0  0  0999 V2000\nM  END\n$$$$\n";
+        format!("{}{broken}{}", good("first", "1.5"), good("second", "2.5"))
+    }
+
+    fn view_of(name: &str, content: &str) -> RecordsView {
+        let mut mem = silva_viz_core::MemSource::new();
+        let id = mem.add(name, content.as_bytes().to_vec());
+        let source: silva_viz_core::SharedSource = std::rc::Rc::new(std::cell::RefCell::new(mem));
+        let blob = Blob::open(source, id).expect("opening the blob");
+        RecordsView::new(blob, Format::Sdf, "SDF")
+    }
+
+    /// Runs one frame of a view the way the shell would, and returns how many
+    /// shapes it painted — so "it did not panic" is joined by "it drew".
+    fn render(view: &mut RecordsView) -> usize {
+        let ctx = egui::Context::default();
+        let output = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| view.ui(ui));
+        });
+        output.shapes.len()
+    }
+
+    #[test]
+    fn test_the_whole_view_renders_a_frame_without_panicking() {
+        // The stepper, the structure, the details grid and the failure list all
+        // run here. Nothing else in this crate paints, so a panic in any of
+        // them would otherwise first appear in front of a user.
+        let mut view = view_of("mixed.sdf", &mixed_file());
+        assert_eq!(view.records.len(), 2);
+        assert_eq!(view.skipped.len(), 1);
+        assert!(render(&mut view) > 0, "the first frame painted nothing");
+        // A second frame, in case the first cached something it should not.
+        assert!(render(&mut view) > 0, "the second frame painted nothing");
+    }
+
+    #[test]
+    fn test_a_file_whose_every_record_failed_still_renders_and_says_so() {
+        // `ReadOutcome::is_empty` only consults `records`, so a file like this
+        // reads as "empty" upstream. It must not render as a blank window.
+        let all_bad = "broken\n  chem\n\n 10  9  0  0  0  0  0  0  0  0999 V2000\nM  END\n$$$$\n";
+        let mut view = view_of("bad.sdf", all_bad);
+        assert!(view.records.is_empty());
+        assert_eq!(view.skipped.len(), 1);
+        assert!(view.title().contains("no records"), "{}", view.title());
+        assert!(render(&mut view) > 0, "the failure list must still paint");
+    }
+
+    #[test]
+    fn test_the_title_counts_the_selected_record_of_a_multi_record_file() {
+        let mut view = view_of("mixed.sdf", &mixed_file());
+        assert!(
+            view.title().starts_with("mixed.sdf — SDF (1 of 2)"),
+            "{}",
+            view.title()
+        );
+        view.selected = 1;
+        assert!(
+            view.title().starts_with("mixed.sdf — SDF (2 of 2)"),
+            "{}",
+            view.title()
+        );
+    }
+
+    #[test]
+    fn test_a_v3000_record_after_a_good_one_is_reported_rather_than_drawn_blank() {
+        // The probe declines a file whose *first* record is V3000, but a later
+        // one slips through — and chem reports it as a successfully read
+        // molecule with no atoms, which would paint an empty panel.
+        let good = "first\n  chem\n\n  1  0  0  0  0  0  0  0  0  0999 V2000\n    0.0000    0.0000    0.0000 C   0  0\nM  END\n$$$$\n";
+        let v3000 = "second\n  chem\n\n  0  0  0  0  0  0  0  0  0  0999 V3000\nM  V30 BEGIN CTAB\nM  V30 COUNTS 21 22\nM  END\n$$$$\n";
+        let mut view = view_of("late.sdf", &format!("{good}{v3000}"));
+
+        assert_eq!(view.records.len(), 1, "the atomless record is not drawable");
+        assert_eq!(view.skipped.len(), 1);
+        assert_eq!(view.skipped[0].position, 2);
+        assert!(
+            view.skipped[0].error.contains("no atoms"),
+            "{:?}",
+            view.skipped[0]
+        );
+        render(&mut view);
+    }
+
     #[test]
     fn test_a_single_record_without_a_terminator_still_counts_as_one() {
         // The commonest structure file there is: one molecule, no `$$$$`.
