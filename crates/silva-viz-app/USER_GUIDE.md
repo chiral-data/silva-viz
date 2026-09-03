@@ -62,6 +62,11 @@ time — `◀` and `▶` step through a multi-record file — with the molecule'
 formula, weight, atom and bond counts below it, followed by any `> <FIELD>`
 data values the record carried.
 
+Hydrogens are not drawn, though the counts below the structure still include
+them. An SDF usually stores every hydrogen as an atom of its own, and drawing
+them buries the skeleton — a benzene ring becomes twelve vertices instead of
+six.
+
 Recognition is by the *counts line*, the fourth line of every record, so the
 extension is not consulted: a `.mol`, an `.sdf` and a `.txt` holding a molfile
 all open the same way, and an `.sdf` that is really prose opens as text.
@@ -73,11 +78,12 @@ own message. Two cases worth knowing:
 - **A V3000 molfile is declined** and opens as text. The underlying library
   reads only V2000, and a V3000 record would otherwise come back as a molecule
   with no atoms — a blank panel with no explanation.
-- **A record with 100 or more atoms *and* 100 or more bonds fails to parse.**
-  The molfile format packs both counts into six characters with no separator,
-  so `113` atoms and `126` bonds are written `113126` and read back as one
-  number. This is a limitation of the library, not of the file; such records
-  appear in the warning line rather than vanishing.
+- **A record with 100 or more atoms fails to parse.** The molfile format packs
+  each count and atom index into three characters with no separator, so a bond
+  between atoms 99 and 100 is written ` 99100` and read back as one number.
+  This is a limitation of the library rather than of the file — such files are
+  perfectly valid, and other tools read them — so these records appear in the
+  warning line rather than vanishing.
 
 ## Limits, and what happens at them
 

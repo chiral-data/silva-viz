@@ -146,6 +146,23 @@ impl Widget for StructureView<'_> {
     }
 }
 
+/// Describes a structure with a stand-in text measurer, for tests in this
+/// crate that need to assert on what a molecule draws without a font atlas.
+#[cfg(test)]
+pub(crate) fn describe_for_test(
+    molecule: &Molecule,
+    options: &StructureOptions,
+) -> Vec<StructureShape> {
+    describe_structure(
+        molecule,
+        egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(400.0, 400.0)),
+        options,
+        &StructureTheme::light(),
+        Color32::GRAY,
+        &|text: &str, size: f32| Vec2::new(text.len() as f32 * size * 0.5, size),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

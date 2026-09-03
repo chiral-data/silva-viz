@@ -10,6 +10,7 @@
 //! `.smi` viewer adds a factory rather than a second copy of this.
 
 use crate::structure::StructureView;
+use chem::draw::StructureOptions;
 use chem::io::reader::{self, Format, Record, Skipped};
 use silva_viz_core::{Blob, View};
 
@@ -48,6 +49,9 @@ pub struct RecordsView {
     /// A failure to read the bytes at all, which is not the same as a file
     /// whose records failed to parse.
     error: Option<String>,
+    /// How the structures are drawn. Fixed per format for now; story D makes
+    /// it adjustable and persists it.
+    options: StructureOptions,
 }
 
 impl RecordsView {
@@ -60,6 +64,7 @@ impl RecordsView {
             selected: 0,
             total: None,
             error: None,
+            options: options_for(format),
         };
 
         let bytes = match blob.read_all() {
@@ -215,10 +220,13 @@ impl View for RecordsView {
         let structure_height = (ui.available_height() * 0.62).max(160.0);
         let width = ui.available_width();
         if let Some(shown) = self.current() {
-            ui.add(StructureView::new(
-                &shown.record.molecule,
-                egui::Vec2::new(width, structure_height),
-            ));
+            ui.add(
+                StructureView::new(
+                    &shown.record.molecule,
+                    egui::Vec2::new(width, structure_height),
+                )
+                .with_options(self.options),
+            );
         } else if self.skipped.is_empty() {
             ui.weak("this file held no records");
         }
@@ -236,6 +244,25 @@ impl View for RecordsView {
                 self.failures(ui);
             });
     }
+}
+
+/// The depiction options a format opens with.
+///
+/// An SDF carries hydrogens as real atoms in the graph, and drawing every one
+/// of them buries the skeleton the structure exists to show — a benzene ring
+/// becomes twelve vertices instead of six. `chem`'s own field documentation
+/// recommends against it for exactly this format. SMILES leaves hydrogens
+/// implicit, so the flag has nothing to hide there and `chem`'s default
+/// stands.
+///
+/// Hidden atoms take their bonds with them, so this removes the H labels and
+/// their bonds together rather than leaving strokes pointing at nothing.
+fn options_for(format: Format) -> StructureOptions {
+    let mut options = StructureOptions::default();
+    if matches!(format, Format::Sdf) {
+        options.explicit_hydrogens = false;
+    }
+    options
 }
 
 /// The file text cut to at most `max` records, and how many it actually held.
@@ -421,6 +448,56 @@ mod tests {
             view.skipped[0]
         );
         render(&mut view);
+    }
+
+    /// Methane with all four hydrogens as real atoms in the graph, which is how
+    /// an SDF usually carries them: 5 atoms, 4 bonds.
+    const METHANE_WITH_H: &str = "methane\n  chem\n\n  5  4  0  0  0  0  0  0  0  0999 V2000\n\
+        0.0000    0.0000    0.0000 C   0  0\n    1.0000    0.0000    0.0000 H   0  0\n\
+       -1.0000    0.0000    0.0000 H   0  0\n    0.0000    1.0000    0.0000 H   0  0\n\
+        0.0000   -1.0000    0.0000 H   0  0\n  1  2  1  0\n  1  3  1  0\n  1  4  1  0\n\
+      1  5  1  0\nM  END\n$$$$\n";
+
+    #[test]
+    fn test_an_sdf_hides_the_hydrogens_it_carries_as_atoms() {
+        // Not a test that a flag holds a value — a test that the flag has its
+        // effect. An SDF stores hydrogens explicitly, and drawing all of them
+        // buries the skeleton, so the SDF viewer opens with them hidden.
+        let view = view_of("methane.sdf", METHANE_WITH_H);
+        assert_eq!(view.records.len(), 1);
+        assert_eq!(
+            view.records[0].record.molecule.num_atoms(),
+            5,
+            "the molecule still holds every hydrogen"
+        );
+        assert!(!view.options.explicit_hydrogens);
+
+        let drawn =
+            crate::structure::describe_for_test(&view.records[0].record.molecule, &view.options);
+        let labels: Vec<&str> = drawn
+            .iter()
+            .filter_map(|s| match s {
+                chem::draw::StructureShape::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !labels.contains(&"H"),
+            "no hydrogen should be labelled: {labels:?}"
+        );
+
+        // And with them shown, they come back — so the assertion above is
+        // about the option rather than about this molecule.
+        let mut shown_options = view.options;
+        shown_options.explicit_hydrogens = true;
+        let with_h =
+            crate::structure::describe_for_test(&view.records[0].record.molecule, &shown_options);
+        assert!(
+            with_h.len() > drawn.len(),
+            "showing hydrogens must draw more: {} vs {}",
+            with_h.len(),
+            drawn.len()
+        );
     }
 
     #[test]
