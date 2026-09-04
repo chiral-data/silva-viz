@@ -32,21 +32,51 @@ cd crates/silva-viz-app && trunk serve   # http://127.0.0.1:8080
   lowest priority and pages through the file, so a 3 GB blob opens as fast as a
   3 KB one.
 
-Five viewers ship: metadata, hex, text, delimited table, and image (PNG, JPEG,
-GIF, BMP).
+Seven viewers ship: metadata, hex, text, delimited table, image (PNG, JPEG,
+GIF, BMP), and two for **molecular structures** — an MDL molfile or SDF, and a
+`.smi` list of SMILES. Either opens as a **record browser**: a scrollable,
+filterable list of the file's records on one side, the selected structure and
+its details on the other, with a divider you can drag. The list is virtualised,
+so a twenty-thousand-record library costs the same to scroll as a two-record
+one.
+
+The filter matches names and formulas — not the SMILES column, deliberately,
+because a text match over SMILES is not a substructure search and should not
+look like one.
+
+How structures are drawn — which carbons are labelled, whether atoms are
+symbols or coloured dots, whether stored hydrogens appear — is adjustable per
+window, shared by every window, and remembered between sessions.
+
+The structure viewers are where "by the bytes, never by the name" meets its
+limit, and they meet it differently. A molfile is recognised by its *counts
+line*, the fourth line of every record, so a `.mol`, an `.sdf` and a `.txt`
+holding a molfile all open alike. SMILES has no magic bytes at all — `CCO` is a
+molecule and also three letters — so that viewer is the only one here that
+reads a filename. Two things keep it honest: the extension is necessary but not
+sufficient, and a file that plainly parses without the name is offered under
+right-click → *Open in* at a negative priority, so it can be opened on purpose
+and never by accident.
 
 ## Adding a viewer
 
-A viewer is a `ViewerFactory` and a `View`, and the five built-in ones have no
+A viewer is a `ViewerFactory` and a `View`, and the built-in ones have no
 privileged access to the shell — they are registered exactly the way yours
-would be. See [`docs/viewers.md`](docs/viewers.md); it is about thirty lines.
+would be. [`docs/viewers.md`](docs/viewers.md) has the whole of a working
+viewer in one listing, then the two things that are not obvious: how to choose
+a bid priority, and where to keep a setting a user can change.
 
 ## Layout
 
 | crate | what it is |
 | --- | --- |
 | `silva-viz-core` | the seam: `FileSource`, `ViewerFactory`, `View`, `Blob` |
-| `silva-viz-app` | the eframe shell and the five built-in viewers |
+| `silva-viz-app` | the eframe shell and the five format-agnostic viewers |
+| `silva-viz-chem` | the SDF and SMILES viewers, built on [`chem`](https://crates.io/crates/chem) |
+
+`silva-viz-chem` is a downstream crate registered through the same call a
+third-party one would use, and CI pins the other half of that claim:
+`silva-viz-core` still builds with no chemistry crate in its tree.
 
 The browser talks to `FileSource` and never to `std::path::Path`, which is the
 only reason the same panel compiles for the web — where there is no filesystem

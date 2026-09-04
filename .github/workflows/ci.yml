@@ -70,26 +70,43 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
 
-      # v0.1.0 is the generic shell. Chemistry arrives in v0.2.0 as a separate
-      # crate behind the viewer registry, and this is what stops it arriving
-      # early and quietly.
-      - name: The shell knows nothing about chemistry
+      # Chemistry arrived in v0.2.0, so the v0.1.0 form of this check ("nowhere
+      # in the tree") could only be deleted or narrowed. Narrowed: the seam is
+      # `silva-viz-core`, and it must still be possible to build the browser,
+      # the registry and the `View` trait without a chemistry crate. That is
+      # the property the registry exists to provide, and this is the only thing
+      # that asserts it.
+      - name: Chemistry stays behind the seam
         run: |
-          if cargo tree -e normal | grep -qi 'chem'; then
-            echo "::error::the v0.1.0 shell must not depend on a chemistry crate"
-            cargo tree -e normal | grep -i 'chem'
+          if cargo tree -e normal -p silva-viz-core | grep -qi 'chem'; then
+            echo "::error::silva-viz-core must not depend on a chemistry crate"
+            cargo tree -e normal -p silva-viz-core | grep -i 'chem'
             exit 1
           fi
 
-      # Not a rule, a tripwire. 334 is what an eframe app plus an image
-      # decoder costs today; a jump means something arrived that nobody chose,
+      # Not a rule, a tripwire. 347 is what an eframe app, an image decoder and
+      # `chem` cost today; a jump means something arrived that nobody chose,
       # and the number in the message is the one to re-measure and update.
+      #
+      # v0.2.0 moved this from 334 to 347. Only **9 new packages** arrived —
+      # `chem` itself, `nom`, `bitvec` with `funty`/`radium`/`tap`/`wyz`, and
+      # `byteorder`/`fxhash` — but the count is of `sort -u` *lines*, and a
+      # crate reached by two paths also prints a `(*)` continuation line that
+      # is counted separately. So 9 packages cost 12 lines. Do not "fix" the
+      # arithmetic; measure with the command above.
+      #
+      # The 347th line is that trap biting a second time: story C gave
+      # `silva-viz-chem` a dependency on `egui_extras`, which the app crate
+      # already had. **No new package** — one extra `(*)` line.
+      #
+      # Five of the nine are for `chem::fp`, which no viewer here calls — an
+      # upstream feature gate, not something to work around from this side.
       - name: The dependency tree has not quietly grown
         run: |
           count=$(cargo tree -e normal --prefix none | sort -u | wc -l)
           echo "unique dependencies: $count"
-          if [ "$count" -gt 360 ]; then
-            echo "::error::dependency count $count exceeds the recorded ceiling of 360 (was 334)"
+          if [ "$count" -gt 375 ]; then
+            echo "::error::dependency count $count exceeds the recorded ceiling of 375 (was 347)"
             exit 1
           fi
 

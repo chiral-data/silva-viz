@@ -41,9 +41,15 @@ enum Picked {
 
 /// The viewers this app ships with.
 ///
-/// Registration order settles ties, and there are none among these five — but
-/// it is also the order the "Open in" menu falls back to, so it is written
+/// Registration order settles ties, and there are none among these — but it is
+/// also the order the "Open in" menu falls back to, so it is written
 /// worst-bid-first to read the way the menu does.
+///
+/// The chemistry viewers come last and come from another crate, through the
+/// same `register` call a third-party crate would use. That they have no
+/// privileged access here is the property the whole registry exists to
+/// provide, and CI checks the other half of it: `silva-viz-core` still knows
+/// nothing about chemistry.
 pub fn default_registry() -> ViewerRegistry {
     let mut registry = ViewerRegistry::new();
     registry
@@ -52,6 +58,7 @@ pub fn default_registry() -> ViewerRegistry {
         .register(Box::new(views::text::TextFactory))
         .register(Box::new(views::table::TableFactory))
         .register(Box::new(views::image::ImageFactory));
+    silva_viz_chem::register(&mut registry);
     registry
 }
 
@@ -380,6 +387,88 @@ mod tests {
         let registry = default_registry();
         let probe = FileProbe::new("d.csv", b"a,b,c\n1,2,3\n4,5,6\n", 18);
         assert_eq!(registry.best_for(&probe), Some("table"));
+    }
+
+    /// A minimal but real single-atom molfile.
+    const METHANE: &[u8] = b"methane\n  chem\n\n  1  0  0  0  0  0  0  0  0  0999 V2000\n    0.0000    0.0000    0.0000 C   0  0\nM  END\n$$$$\n";
+
+    #[test]
+    fn test_a_molfile_opens_as_a_structure_rather_than_as_text() {
+        let registry = default_registry();
+        let probe = FileProbe::new("aspirin.sdf", METHANE, METHANE.len() as u64);
+        assert_eq!(registry.best_for(&probe), Some("sdf"));
+    }
+
+    #[test]
+    fn test_a_molfile_named_txt_still_opens_as_a_structure() {
+        // The registry's whole design, applied to a second format: the counts
+        // line is evidence, the extension is not consulted.
+        let registry = default_registry();
+        let probe = FileProbe::new("mystery.txt", METHANE, METHANE.len() as u64);
+        assert_eq!(registry.best_for(&probe), Some("sdf"));
+    }
+
+    #[test]
+    fn test_an_sdf_that_is_really_prose_is_left_to_the_text_viewer() {
+        // The half a name-based viewer gets wrong.
+        let registry = default_registry();
+        let prose = b"just some prose\nabout molecules\nand nothing else\nat all here\n";
+        let probe = FileProbe::new("lying.sdf", prose, prose.len() as u64);
+        assert_eq!(registry.best_for(&probe), Some("text"));
+        let ids: Vec<_> = registry
+            .claims_for(&probe)
+            .into_iter()
+            .map(|c| c.0)
+            .collect();
+        assert!(!ids.contains(&"sdf"), "{ids:?}");
+    }
+
+    const SMILES_LIBRARY: &[u8] =
+        b"CC(=O)Oc1ccccc1C(=O)O aspirin\nCn1cnc2c1c(=O)n(C)c(=O)n2C caffeine\nc1ccccc1 benzene\n";
+
+    #[test]
+    fn test_a_smi_opens_as_structures_rather_than_as_text_or_a_table() {
+        let registry = default_registry();
+        let probe = FileProbe::new("library.smi", SMILES_LIBRARY, SMILES_LIBRARY.len() as u64);
+        assert_eq!(registry.best_for(&probe), Some("smiles"));
+    }
+
+    #[test]
+    fn test_a_txt_of_smiles_stays_text_but_offers_the_structure_viewer() {
+        // The negative bid, which is the whole reason SMILES may read a
+        // filename at all: openable on purpose, never by accident.
+        let registry = default_registry();
+        let probe = FileProbe::new("results.txt", SMILES_LIBRARY, SMILES_LIBRARY.len() as u64);
+        assert_eq!(registry.best_for(&probe), Some("text"));
+        let ids: Vec<_> = registry
+            .claims_for(&probe)
+            .into_iter()
+            .map(|c| c.0)
+            .collect();
+        assert!(ids.contains(&"smiles"), "{ids:?}");
+        // Below text, so it is never the default; above the hex floor, so it
+        // is not buried under the two viewers that bid on everything.
+        let at = |id: &str| ids.iter().position(|i| *i == id).unwrap();
+        assert!(at("text") < at("smiles"), "{ids:?}");
+        assert!(at("smiles") < at("hex"), "{ids:?}");
+    }
+
+    #[test]
+    fn test_the_two_structure_viewers_do_not_compete_for_the_same_file() {
+        // Each format's probe should decline the other's file outright, or the
+        // "Open in" menu offers a viewer that cannot read what it opens.
+        let registry = default_registry();
+        let smi = FileProbe::new("a.smi", SMILES_LIBRARY, SMILES_LIBRARY.len() as u64);
+        let ids: Vec<_> = registry.claims_for(&smi).into_iter().map(|c| c.0).collect();
+        assert!(!ids.contains(&"sdf"), "{ids:?}");
+
+        let molfile = FileProbe::new("a.sdf", METHANE, METHANE.len() as u64);
+        let ids: Vec<_> = registry
+            .claims_for(&molfile)
+            .into_iter()
+            .map(|c| c.0)
+            .collect();
+        assert!(!ids.contains(&"smiles"), "{ids:?}");
     }
 
     #[test]

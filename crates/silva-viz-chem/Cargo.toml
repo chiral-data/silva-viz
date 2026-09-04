@@ -1,0 +1,16 @@
+[package]
+name = "silva-viz-chem"
+description = "Chemistry viewers for silva-viz: molecular structure files, drawn."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+silva-viz-core = { workspace = true }
+egui = { workspace = true }
+# Back after story A dropped it: `TableBuilder` is the only virtualised table
+# in the stack, and the record list needs it. No new packages — the app crate
+# already depends on it — so the dependency tripwire does not move.
+egui_extras = { workspace = true }
+chem = { workspace = true }
