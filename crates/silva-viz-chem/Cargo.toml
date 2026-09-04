@@ -1,0 +1,12 @@
+[package]
+name = "silva-viz-chem"
+description = "Chemistry viewers for silva-viz: molecular structure files, drawn."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+silva-viz-core = { workspace = true }
+egui = { workspace = true }
+chem = { workspace = true }

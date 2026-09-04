@@ -41,9 +41,15 @@ enum Picked {
 
 /// The viewers this app ships with.
 ///
-/// Registration order settles ties, and there are none among these five — but
-/// it is also the order the "Open in" menu falls back to, so it is written
+/// Registration order settles ties, and there are none among these — but it is
+/// also the order the "Open in" menu falls back to, so it is written
 /// worst-bid-first to read the way the menu does.
+///
+/// The chemistry viewers come last and come from another crate, through the
+/// same `register` call a third-party crate would use. That they have no
+/// privileged access here is the property the whole registry exists to
+/// provide, and CI checks the other half of it: `silva-viz-core` still knows
+/// nothing about chemistry.
 pub fn default_registry() -> ViewerRegistry {
     let mut registry = ViewerRegistry::new();
     registry
@@ -52,6 +58,7 @@ pub fn default_registry() -> ViewerRegistry {
         .register(Box::new(views::text::TextFactory))
         .register(Box::new(views::table::TableFactory))
         .register(Box::new(views::image::ImageFactory));
+    silva_viz_chem::register(&mut registry);
     registry
 }
 
@@ -380,6 +387,40 @@ mod tests {
         let registry = default_registry();
         let probe = FileProbe::new("d.csv", b"a,b,c\n1,2,3\n4,5,6\n", 18);
         assert_eq!(registry.best_for(&probe), Some("table"));
+    }
+
+    /// A minimal but real single-atom molfile.
+    const METHANE: &[u8] = b"methane\n  chem\n\n  1  0  0  0  0  0  0  0  0  0999 V2000\n    0.0000    0.0000    0.0000 C   0  0\nM  END\n$$$$\n";
+
+    #[test]
+    fn test_a_molfile_opens_as_a_structure_rather_than_as_text() {
+        let registry = default_registry();
+        let probe = FileProbe::new("aspirin.sdf", METHANE, METHANE.len() as u64);
+        assert_eq!(registry.best_for(&probe), Some("sdf"));
+    }
+
+    #[test]
+    fn test_a_molfile_named_txt_still_opens_as_a_structure() {
+        // The registry's whole design, applied to a second format: the counts
+        // line is evidence, the extension is not consulted.
+        let registry = default_registry();
+        let probe = FileProbe::new("mystery.txt", METHANE, METHANE.len() as u64);
+        assert_eq!(registry.best_for(&probe), Some("sdf"));
+    }
+
+    #[test]
+    fn test_an_sdf_that_is_really_prose_is_left_to_the_text_viewer() {
+        // The half a name-based viewer gets wrong.
+        let registry = default_registry();
+        let prose = b"just some prose\nabout molecules\nand nothing else\nat all here\n";
+        let probe = FileProbe::new("lying.sdf", prose, prose.len() as u64);
+        assert_eq!(registry.best_for(&probe), Some("text"));
+        let ids: Vec<_> = registry
+            .claims_for(&probe)
+            .into_iter()
+            .map(|c| c.0)
+            .collect();
+        assert!(!ids.contains(&"sdf"), "{ids:?}");
     }
 
     #[test]

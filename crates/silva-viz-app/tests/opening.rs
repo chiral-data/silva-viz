@@ -22,6 +22,9 @@ use std::rc::Rc;
 
 const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01";
 
+/// A minimal but real single-atom molfile, coordinates and all.
+const MOLFILE: &[u8] = b"methane\n  chem\n\n  1  0  0  0  0  0  0  0  0  0999 V2000\n    0.0000    0.0000    0.0000 C   0  0\nM  END\n$$$$\n";
+
 /// A directory of awkward files, removed when the test ends.
 struct Fixture(PathBuf);
 
@@ -69,12 +72,14 @@ fn test_each_kind_of_file_opens_in_the_viewer_that_recognised_it() {
     fixture.write("notes.txt", b"hello\nworld\n");
     fixture.write("data.csv", b"a,b,c\n1,2,3\n4,5,6\n7,8,9\n");
     fixture.write("picture.png", PNG);
+    fixture.write("aspirin.sdf", MOLFILE);
     fixture.write("opaque.bin", &[0u8, 1, 2, 3, 255]);
     let source = fixture.source();
 
     assert_eq!(viewers(&source, "notes.txt")[0], "text");
     assert_eq!(viewers(&source, "data.csv")[0], "table");
     assert_eq!(viewers(&source, "picture.png")[0], "image");
+    assert_eq!(viewers(&source, "aspirin.sdf")[0], "sdf");
     // Nothing recognised it, so it falls to the floor rather than nowhere.
     assert_eq!(viewers(&source, "opaque.bin"), ["hex", "meta"]);
 }
@@ -90,6 +95,22 @@ fn test_a_png_named_txt_opens_as_a_picture_and_text_is_not_even_offered() {
     let offered = viewers(&source, "pretend.txt");
     assert_eq!(offered[0], "image");
     assert!(!offered.contains(&"text".to_string()), "{offered:?}");
+}
+
+#[test]
+fn test_a_molfile_named_txt_opens_as_a_structure_through_a_real_filesystem() {
+    // The unit tests bid against a hand-built probe. This one proves the head
+    // that `Blob` actually reads off a disk is enough to recognise a molfile —
+    // the counts line is on the fourth line, well inside the 4 KiB head.
+    let fixture = Fixture::new("molfile-liar");
+    fixture.write("mystery.txt", MOLFILE);
+    let source = fixture.source();
+
+    let offered = viewers(&source, "mystery.txt");
+    assert_eq!(offered[0], "sdf");
+    // Still text underneath, because a molfile is text — unlike a PNG, which
+    // the text viewer refuses outright.
+    assert!(offered.contains(&"text".to_string()), "{offered:?}");
 }
 
 #[test]
