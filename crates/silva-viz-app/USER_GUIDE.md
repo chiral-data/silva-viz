@@ -78,10 +78,33 @@ searching `c1ccccc1` would find some benzene-containing molecules and quietly
 miss others written a different way — an answer that looks chemical and is not.
 Real substructure search needs SMARTS, and will arrive as its own feature.
 
-Hydrogens are not drawn, though the counts below the structure still include
-them. An SDF usually stores every hydrogen as an atom of its own, and drawing
-them buries the skeleton — a benzene ring becomes twelve vertices instead of
-six.
+### Options
+
+An **Options** section under the details controls how structures are drawn.
+It is collapsed until you open it.
+
+- **Carbons** — which carbons get a visible label. Chemical convention leaves
+  them as implicit vertices, so a benzene ring is six lines rather than six
+  `C` glyphs; this chooses the exceptions. `Default` labels only what a bare
+  vertex would not show, `Terminal` adds chain ends, `Acyclic` adds everything
+  outside a ring, `All` labels every one, `None` labels nothing.
+- **Atoms** — `Labels` draws element symbols, `Balls` draws coloured dots
+  (legible where text would not be), `None` draws bonds only.
+- **Hydrogens** — whether hydrogens stored as atoms are drawn. Off by default:
+  an SDF usually carries every hydrogen explicitly, and drawing them buries
+  the skeleton — a benzene ring becomes twelve vertices instead of six. The
+  counts below the structure always include them either way.
+
+  It has **no effect on a `.smi` file**, because SMILES leaves hydrogens
+  implicit — there are no hydrogen atoms in the graph to hide.
+
+**The setting is shared by every open structure window, and remembered between
+sessions.** Change it in one window and every other structure follows in the
+same frame; that is deliberate, not a glitch. It is kept with the same
+mechanism as your window positions, which means the same caveat applies: an
+upgrade that changes the stored format can reset it, and settings are written
+periodically rather than instantly, so a hard kill immediately after a change
+may lose it.
 
 For a molfile, recognition is by the *counts line*, the fourth line of every
 record, so the extension is not consulted: a `.mol`, an `.sdf` and a `.txt`
