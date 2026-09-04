@@ -423,6 +423,54 @@ mod tests {
         assert!(!ids.contains(&"sdf"), "{ids:?}");
     }
 
+    const SMILES_LIBRARY: &[u8] =
+        b"CC(=O)Oc1ccccc1C(=O)O aspirin\nCn1cnc2c1c(=O)n(C)c(=O)n2C caffeine\nc1ccccc1 benzene\n";
+
+    #[test]
+    fn test_a_smi_opens_as_structures_rather_than_as_text_or_a_table() {
+        let registry = default_registry();
+        let probe = FileProbe::new("library.smi", SMILES_LIBRARY, SMILES_LIBRARY.len() as u64);
+        assert_eq!(registry.best_for(&probe), Some("smiles"));
+    }
+
+    #[test]
+    fn test_a_txt_of_smiles_stays_text_but_offers_the_structure_viewer() {
+        // The negative bid, which is the whole reason SMILES may read a
+        // filename at all: openable on purpose, never by accident.
+        let registry = default_registry();
+        let probe = FileProbe::new("results.txt", SMILES_LIBRARY, SMILES_LIBRARY.len() as u64);
+        assert_eq!(registry.best_for(&probe), Some("text"));
+        let ids: Vec<_> = registry
+            .claims_for(&probe)
+            .into_iter()
+            .map(|c| c.0)
+            .collect();
+        assert!(ids.contains(&"smiles"), "{ids:?}");
+        // Below text, so it is never the default; above the hex floor, so it
+        // is not buried under the two viewers that bid on everything.
+        let at = |id: &str| ids.iter().position(|i| *i == id).unwrap();
+        assert!(at("text") < at("smiles"), "{ids:?}");
+        assert!(at("smiles") < at("hex"), "{ids:?}");
+    }
+
+    #[test]
+    fn test_the_two_structure_viewers_do_not_compete_for_the_same_file() {
+        // Each format's probe should decline the other's file outright, or the
+        // "Open in" menu offers a viewer that cannot read what it opens.
+        let registry = default_registry();
+        let smi = FileProbe::new("a.smi", SMILES_LIBRARY, SMILES_LIBRARY.len() as u64);
+        let ids: Vec<_> = registry.claims_for(&smi).into_iter().map(|c| c.0).collect();
+        assert!(!ids.contains(&"sdf"), "{ids:?}");
+
+        let molfile = FileProbe::new("a.sdf", METHANE, METHANE.len() as u64);
+        let ids: Vec<_> = registry
+            .claims_for(&molfile)
+            .into_iter()
+            .map(|c| c.0)
+            .collect();
+        assert!(!ids.contains(&"smiles"), "{ids:?}");
+    }
+
     #[test]
     fn test_a_binary_falls_through_to_hex_and_metadata_only() {
         let registry = default_registry();

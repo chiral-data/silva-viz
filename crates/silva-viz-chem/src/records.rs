@@ -14,13 +14,17 @@ use chem::draw::StructureOptions;
 use chem::io::reader::{self, Format, Record, Skipped};
 use silva_viz_core::{Blob, View};
 
-/// Above this the viewer declines and the hex viewer takes the file.
+/// Above this a structure viewer declines and the hex viewer takes the file.
 ///
 /// The number is about the *read*, not the display: [`reader::read`] takes the
 /// whole file as a `&str` and parses every record before anything is shown, so
 /// this is the size of a freeze the user cannot cancel. Paging a structure file
 /// needs `Blob::read_range` and is a story of its own.
-pub const SDF_LIMIT: u64 = 32 * 1024 * 1024;
+///
+/// One constant for every format, because the reason is the same for all of
+/// them. It was called `SDF_LIMIT` while SDF was the only format, which stopped
+/// being true the moment `.smi` arrived.
+pub const SIZE_LIMIT: u64 = 32 * 1024 * 1024;
 
 /// Records parsed at open. Beyond this the file is truncated and the view says
 /// so, because the cost is per record rather than per byte.
@@ -29,8 +33,9 @@ const MAX_RECORDS: usize = 20_000;
 /// One record, with the parts that are expensive or awkward to recompute each frame.
 struct Shown {
     record: Record,
-    /// Its 1-based ordinal in the file, so the stepper and the failure list
-    /// count in the same units.
+    /// Where the file this came from would say it is, in whatever units
+    /// [`reader`] counts for that format: a record ordinal for SDF, a physical
+    /// line number for SMILES. Never inferred — see [`attach_positions`].
     position: usize,
     /// Sorted once here because [`chem::core::molecule::Molecule::properties`]
     /// hands back a `HashMap`, whose iteration order changes between runs — an
@@ -52,6 +57,8 @@ pub struct RecordsView {
     /// How the structures are drawn. Fixed per format for now; story D makes
     /// it adjustable and persists it.
     options: StructureOptions,
+    /// Kept only to label positions, which are counted differently per format.
+    format: Format,
 }
 
 impl RecordsView {
@@ -65,6 +72,7 @@ impl RecordsView {
             total: None,
             error: None,
             options: options_for(format),
+            format,
         };
 
         let bytes = match blob.read_all() {
@@ -86,7 +94,11 @@ impl RecordsView {
 
         let outcome = reader::read(&content, format);
         view.skipped = outcome.skipped;
-        view.records = attach_positions(outcome.records, &view.skipped, held.min(MAX_RECORDS));
+        view.records = attach_positions(
+            outcome.records,
+            &view.skipped,
+            &record_positions(&content, format),
+        );
 
         // A record that parsed into no atoms at all is a failure wearing a
         // success's clothes — chem 0.6 does this to a V3000 molfile, reporting
@@ -108,6 +120,23 @@ impl RecordsView {
 
     fn current(&self) -> Option<&Shown> {
         self.records.get(self.selected)
+    }
+
+    /// Gives the selected molecule coordinates if it has none.
+    ///
+    /// SMILES carries no layout, so one has to be generated before anything can
+    /// be drawn. There is deliberately no "already laid out" flag to go with
+    /// this: [`chem::core::layout::ensure_coords`] returns early when the
+    /// molecule already has coordinates, so the molecule *is* the cache and
+    /// this is a no-op for SDF and for any record drawn before.
+    ///
+    /// The return value is ignored on purpose. It means "has coordinates now",
+    /// not "generated them", so it cannot tell a file's own layout from a
+    /// computed one and there is nothing here worth branching on.
+    fn lay_out_selected(&mut self) {
+        if let Some(shown) = self.records.get_mut(self.selected) {
+            chem::core::layout::ensure_coords(&mut shown.record.molecule);
+        }
     }
 
     fn stepper(&mut self, ui: &mut egui::Ui) {
@@ -173,15 +202,23 @@ impl RecordsView {
             "{} of {total} records could not be read",
             self.skipped.len()
         );
+        let noun = position_noun(self.format);
+        // Three columns only when something fills the middle one: SMILES
+        // carries the offending token in `input`, SDF leaves it empty because
+        // a record is a multi-line block and quoting it back is noise.
+        let has_input = self.skipped.iter().any(|s| !s.input.is_empty());
         egui::CollapsingHeader::new(egui::RichText::new(summary).color(ui.visuals().warn_fg_color))
             .default_open(self.records.is_empty())
             .show(ui, |ui| {
                 egui::Grid::new("record-failures")
-                    .num_columns(2)
+                    .num_columns(if has_input { 3 } else { 2 })
                     .striped(true)
                     .show(ui, |ui| {
                         for skip in &self.skipped {
-                            ui.strong(format!("record {}", skip.position));
+                            ui.strong(format!("{noun} {}", skip.position));
+                            if has_input {
+                                ui.monospace(&skip.input);
+                            }
                             ui.label(&skip.error);
                             ui.end_row();
                         }
@@ -213,6 +250,10 @@ impl View for RecordsView {
 
         self.stepper(ui);
         ui.separator();
+
+        // After the stepper, so a record stepped onto this frame is laid out
+        // before it is drawn rather than one frame late.
+        self.lay_out_selected();
 
         // The structure takes most of the window and the details take the rest,
         // rather than the structure shrinking to whatever the details leave —
@@ -316,15 +357,60 @@ fn truncate(content: &str, format: Format, max: usize) -> (String, usize) {
     }
 }
 
-/// Pairs each parsed record with its 1-based ordinal in the file.
+/// The positions [`reader`] will report for this file's records, in order.
 ///
-/// `chem` reports a position for every record it *skipped* but none for the
-/// ones it kept, so the kept ordinals are the positions `1..=total` that the
-/// skip list does not mention — which is what lets the stepper and the failure
-/// list count in the same units instead of two.
-fn attach_positions(records: Vec<Record>, skipped: &[Skipped], total: usize) -> Vec<Shown> {
+/// Not the same counting system in both formats, which is the whole reason
+/// this exists. `read_sdf` increments only on `$$$$`, so an SDF position is a
+/// record ordinal. `read_smiles` takes its position from
+/// `content.lines().enumerate()` *before* deciding whether to skip a blank or
+/// a `#` comment, so a SMILES position is a physical line number and the
+/// skipped lines consume numbers without producing anything. `Skipped`'s own
+/// documentation says so: "Line number for SMILES, record number for SDF".
+fn record_positions(content: &str, format: Format) -> Vec<usize> {
+    match format {
+        // One per `$$$$`, plus a trailing block with no terminator — which a
+        // single-molecule file usually is.
+        Format::Sdf => {
+            let mut n = content.lines().filter(|l| l.trim() == "$$$$").count();
+            if content
+                .lines()
+                .rev()
+                .take_while(|l| l.trim() != "$$$$")
+                .any(|l| !l.trim().is_empty())
+            {
+                n += 1;
+            }
+            (1..=n).collect()
+        }
+        // The line numbers of the lines the reader will actually look at.
+        Format::Smiles => content
+            .lines()
+            .enumerate()
+            .filter(|(_, line)| {
+                let line = line.trim();
+                !line.is_empty() && !line.starts_with('#')
+            })
+            .map(|(index, _)| index + 1)
+            .collect(),
+    }
+}
+
+/// Pairs each parsed record with the position its file would name it by.
+///
+/// `chem` reports a position for every record it *skipped* and none for the
+/// ones it kept, so the kept positions have to come from somewhere. An earlier
+/// version inferred them as the positions in `1..=total` that the skip list did
+/// not mention. That is right for SDF and wrong for SMILES, where positions are
+/// line numbers and blanks and comments consume them — a file of a comment, a
+/// blank and two molecules has its records at lines 3 and 4, which no
+/// arithmetic over `1..=4` recovers.
+///
+/// So the positions are walked rather than deduced: `positions` is what the
+/// reader will count, in order, and whatever it does not report as failed is
+/// the next kept record.
+fn attach_positions(records: Vec<Record>, skipped: &[Skipped], positions: &[usize]) -> Vec<Shown> {
     let failed: std::collections::HashSet<usize> = skipped.iter().map(|s| s.position).collect();
-    let mut kept = (1..=total.max(records.len() + failed.len())).filter(|p| !failed.contains(p));
+    let mut kept = positions.iter().copied().filter(|p| !failed.contains(p));
     records
         .into_iter()
         .map(|record| {
@@ -342,6 +428,17 @@ fn attach_positions(records: Vec<Record>, skipped: &[Skipped], total: usize) -> 
             }
         })
         .collect()
+}
+
+/// What one of this format's positions is called, for the failure list.
+///
+/// A SMILES failure at "record 3" sends the reader to the wrong place in their
+/// file; the number is a line number, so the word has to be `line`.
+fn position_noun(format: Format) -> &'static str {
+    match format {
+        Format::Sdf => "record",
+        Format::Smiles => "line",
+    }
 }
 
 #[cfg(test)]
@@ -500,6 +597,149 @@ mod tests {
         );
     }
 
+    fn smiles_view(name: &str, content: &str) -> RecordsView {
+        let mut mem = silva_viz_core::MemSource::new();
+        let id = mem.add(name, content.as_bytes().to_vec());
+        let source: silva_viz_core::SharedSource = std::rc::Rc::new(std::cell::RefCell::new(mem));
+        let blob = Blob::open(source, id).expect("opening the blob");
+        RecordsView::new(blob, Format::Smiles, "SMILES")
+    }
+
+    #[test]
+    fn test_a_smiles_record_gets_its_coordinates_from_the_first_draw() {
+        // SMILES carries no layout. Nothing generates one at open, so the
+        // molecule must arrive bare and be laid out by the time it is painted.
+        let mut view = smiles_view("lib.smi", "CC(=O)Oc1ccccc1C(=O)O aspirin\n");
+        assert_eq!(view.records.len(), 1);
+        assert!(
+            !view.records[0].record.molecule.has_coords(),
+            "nothing should lay out a molecule at open"
+        );
+
+        assert!(render(&mut view) > 0, "the frame painted nothing");
+        assert!(
+            view.records[0].record.molecule.has_coords(),
+            "one frame should have laid it out"
+        );
+    }
+
+    #[test]
+    fn test_stepping_lays_out_the_record_stepped_onto() {
+        let mut view = smiles_view("lib.smi", "CCO one\nc1ccccc1 two\nCCCC three\n");
+        assert_eq!(view.records.len(), 3);
+        render(&mut view);
+        assert!(view.records[0].record.molecule.has_coords());
+        assert!(
+            !view.records[2].record.molecule.has_coords(),
+            "a record never shown should not have been laid out"
+        );
+
+        view.selected = 2;
+        render(&mut view);
+        assert!(view.records[2].record.molecule.has_coords());
+    }
+
+    #[test]
+    fn test_a_smiles_file_reports_a_bad_line_by_its_line_number() {
+        // End to end through the view, not just the helpers: a comment, a
+        // blank, two molecules and a broken one in between.
+        let mut view = smiles_view(
+            "lib.smi",
+            "# a header\n\nCCO ethanol\nC1CC broken\nc1ccccc1 benzene\n",
+        );
+        assert_eq!(view.records.len(), 2);
+        assert_eq!(view.skipped.len(), 1);
+        assert_eq!(view.skipped[0].position, 4);
+        // The offending token is kept for SMILES, unlike SDF.
+        assert_eq!(view.skipped[0].input, "C1CC");
+        assert_eq!(
+            view.records.iter().map(|s| s.position).collect::<Vec<_>>(),
+            [3, 5]
+        );
+        assert!(render(&mut view) > 0);
+    }
+
+    #[test]
+    fn test_a_vendor_header_shows_up_as_a_failure_on_line_one() {
+        let mut view = smiles_view(
+            "vendor.smi",
+            "smiles name activity\nCCO ethanol 1.5\nc1ccccc1 benzene 2.5\n",
+        );
+        assert_eq!(view.records.len(), 2, "the data must still be read");
+        assert_eq!(view.skipped.len(), 1);
+        assert_eq!(view.skipped[0].position, 1);
+        assert_eq!(view.skipped[0].input, "smiles");
+        assert!(render(&mut view) > 0);
+    }
+
+    #[test]
+    fn test_smiles_positions_are_line_numbers_and_survive_blanks_and_comments() {
+        // The defect this story exists to fix. `read_smiles` takes its position
+        // from `lines().enumerate()` before deciding to skip a blank or a
+        // comment, so those lines consume numbers. Inferring a kept record's
+        // position from `1..=total` put every SMILES failure at the wrong line.
+        let content = "# a header comment\n\nCCO ethanol\nC1CC broken\nc1ccccc1 benzene\n";
+        let positions = record_positions(content, Format::Smiles);
+        assert_eq!(
+            positions,
+            [3, 4, 5],
+            "lines 1 and 2 are a comment and a blank"
+        );
+
+        let outcome = reader::read(content, Format::Smiles);
+        assert_eq!(outcome.records.len(), 2);
+        assert_eq!(outcome.skipped.len(), 1);
+        assert_eq!(outcome.skipped[0].position, 4, "the bad line is line 4");
+
+        let shown = attach_positions(outcome.records, &outcome.skipped, &positions);
+        assert_eq!(
+            shown.iter().map(|s| s.position).collect::<Vec<_>>(),
+            [3, 5],
+            "the kept molecules are on lines 3 and 5"
+        );
+    }
+
+    #[test]
+    fn test_a_kept_smiles_position_agrees_with_the_name_chem_gave_it() {
+        // `read_smiles` names an unnamed record `Molecule_{line}`, so the two
+        // can be checked against each other rather than both being trusted.
+        let content = "\n\n# comment\nCCO\nCCC\n";
+        let outcome = reader::read(content, Format::Smiles);
+        let shown = attach_positions(
+            outcome.records,
+            &outcome.skipped,
+            &record_positions(content, Format::Smiles),
+        );
+        for s in &shown {
+            assert_eq!(
+                s.record.name,
+                format!("Molecule_{}", s.position),
+                "position {} disagrees with the name chem assigned",
+                s.position
+            );
+        }
+        assert_eq!(shown.len(), 2);
+    }
+
+    #[test]
+    fn test_sdf_positions_are_still_record_ordinals() {
+        // Step 1 must not have changed SDF, where positions count `$$$$`.
+        let content = sdf_records(3);
+        assert_eq!(record_positions(&content, Format::Sdf), [1, 2, 3]);
+        // A trailing block with no terminator counts as one more.
+        let trailing = format!(
+            "{}mol\n  chem\n\n  1  0  0  0  0  0  0  0  0  0999 V2000\nM  END\n",
+            sdf_records(2)
+        );
+        assert_eq!(record_positions(&trailing, Format::Sdf), [1, 2, 3]);
+    }
+
+    #[test]
+    fn test_the_failure_noun_matches_how_the_format_counts() {
+        assert_eq!(position_noun(Format::Sdf), "record");
+        assert_eq!(position_noun(Format::Smiles), "line");
+    }
+
     #[test]
     fn test_a_single_record_without_a_terminator_still_counts_as_one() {
         // The commonest structure file there is: one molecule, no `$$$$`.
@@ -565,7 +805,7 @@ mod tests {
                 error: "bad".into(),
             },
         ];
-        let shown = attach_positions(records, &skipped, 4);
+        let shown = attach_positions(records, &skipped, &[1, 2, 3, 4]);
         assert_eq!(
             shown.iter().map(|s| s.position).collect::<Vec<_>>(),
             [1, 3],
@@ -586,7 +826,7 @@ mod tests {
             name: "m".into(),
             smiles: None,
         }];
-        let shown = attach_positions(records, &[], 1);
+        let shown = attach_positions(records, &[], &[1]);
         let keys: Vec<&str> = shown[0]
             .properties
             .iter()
