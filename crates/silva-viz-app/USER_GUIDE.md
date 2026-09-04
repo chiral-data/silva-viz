@@ -57,10 +57,26 @@ viewer would take the file and why not.
 
 ## Structure files
 
-An MDL molfile or SDF, or a `.smi` list of SMILES, opens as a drawn structure. One record is on screen at a
-time — `◀` and `▶` step through a multi-record file — with the molecule's name,
-formula, weight, atom and bond counts below it, followed by any `> <FIELD>`
-data values the record carried.
+An MDL molfile or SDF, or a `.smi` list of SMILES, opens as a **record
+browser**: the file's records listed on the left, the selected one drawn on the
+right. Click a row to draw it, and drag the divider to give either side more
+room. The list is virtualised, so a twenty-thousand-record library scrolls as
+cheaply as a two-record one.
+
+Below the structure: the molecule's name, formula, weight, atom and bond
+counts, and any `> <FIELD>` data values the record carried.
+
+The list's first column is the record's **position** — the same number the
+warning line names, which is a record number for an SDF and a physical line
+number for a `.smi`.
+
+**The filter box matches names and formulas, and nothing else.** Type
+`caffeine` or `C8H10N4O2`; case does not matter. It deliberately does **not**
+search the SMILES column, even though that column is on screen: a text match
+over SMILES is not a substructure search. SMILES is not a canonical form, so
+searching `c1ccccc1` would find some benzene-containing molecules and quietly
+miss others written a different way — an answer that looks chemical and is not.
+Real substructure search needs SMARTS, and will arrive as its own feature.
 
 Hydrogens are not drawn, though the counts below the structure still include
 them. An SDF usually stores every hydrogen as an atom of its own, and drawing

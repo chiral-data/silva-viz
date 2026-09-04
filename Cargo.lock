@@ -3182,6 +3182,7 @@ version = "0.1.0"
 dependencies = [
  "chem",
  "egui",
+ "egui_extras",
  "silva-viz-core",
 ]
 

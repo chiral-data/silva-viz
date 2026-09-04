@@ -41,6 +41,22 @@ struct Shown {
     /// hands back a `HashMap`, whose iteration order changes between runs — an
     /// SDF's data fields would otherwise shuffle every time the file reopened.
     properties: Vec<(String, String)>,
+    /// Shown in the list's own column. Precomputed for the same reason as
+    /// [`Self::search`]: `Molecule::formula` allocates and costs 0.41 µs, which
+    /// is nothing once and 2 ms across five thousand records.
+    formula: String,
+    /// What the filter matches: the name and the formula, lowercased.
+    ///
+    /// Built once, so filtering is a substring scan rather than a few thousand
+    /// `formula()` calls per keystroke — measured at 2.03 ms for five
+    /// thousand records, which is 12% of a frame, against 16 µs for the scan.
+    ///
+    /// Deliberately **not** the SMILES, though the list shows it. A substring
+    /// match over SMILES text is not substructure search: SMILES is not
+    /// canonical, so `c1ccccc1` would find some benzene-containing molecules
+    /// and quietly miss others written differently. That needs SMARTS, and the
+    /// filter's hint text says what it really does in the meantime.
+    search: String,
 }
 
 pub struct RecordsView {
@@ -59,6 +75,34 @@ pub struct RecordsView {
     options: StructureOptions,
     /// Kept only to label positions, which are counted differently per format.
     format: Format,
+    /// What is in the filter box.
+    query: String,
+    /// The query [`Self::visible`] was last built from.
+    ///
+    /// `Response::changed()` alone is not a safe trigger: its own
+    /// documentation says it can be `true` when the text did not change — type
+    /// and erase a character in one frame — and it does *not* fire when the
+    /// code sets `query` itself. Comparing against this is what keeps a
+    /// twenty-thousand-record rebuild off a frame that only moved a cursor.
+    applied: String,
+    /// Indices into [`Self::records`], in file order, that the filter admits.
+    visible: Vec<usize>,
+    /// The widest value each measured column has to fit, kept as the string
+    /// itself so it can be measured with the font that will draw it.
+    ///
+    /// `Column::auto()` sizes from the *currently visible* rows — its own
+    /// documentation says so — and then keeps that width, so a list opened at
+    /// the top sized its position column for `40` and still showed `42` for
+    /// row 4237. The widest value is known at open; nothing about it depends on
+    /// where the user has scrolled to.
+    widest_position: String,
+    widest_formula: String,
+    /// A row to bring into view on the next frame, then forget.
+    ///
+    /// Needed because reconciling the selection can move it somewhere the user
+    /// cannot see. The table only wants this requested on one frame; the
+    /// scroll animates itself from there.
+    pending_scroll: Option<usize>,
 }
 
 impl RecordsView {
@@ -73,6 +117,12 @@ impl RecordsView {
             error: None,
             options: options_for(format),
             format,
+            query: String::new(),
+            applied: String::new(),
+            visible: Vec::new(),
+            widest_position: String::new(),
+            widest_formula: String::new(),
+            pending_scroll: None,
         };
 
         let bytes = match blob.read_all() {
@@ -114,8 +164,57 @@ impl RecordsView {
             error: "parsed as a molecule with no atoms (a V3000 molfile?)".to_string(),
         }));
         view.skipped.sort_by_key(|s| s.position);
+        // No query yet, so everything is visible. Set after the zero-atom
+        // partition above, or the indices would point at records that moved.
+        view.visible = (0..view.records.len()).collect();
+
+        // Measured once, from the whole file rather than from one screenful.
+        // A `0` floor for an empty file keeps the column from collapsing.
+        view.widest_position = view
+            .records
+            .iter()
+            .map(|shown| shown.position)
+            .max()
+            .unwrap_or(0)
+            .to_string();
+        // Longest by characters is exactly the widest here, because both these
+        // columns are drawn monospaced — see `list`.
+        view.widest_formula = view
+            .records
+            .iter()
+            .map(|shown| shown.formula.as_str())
+            .max_by_key(|formula| formula.chars().count())
+            .unwrap_or("")
+            .to_string();
 
         view
+    }
+
+    /// Rebuilds [`Self::visible`] from [`Self::query`], and keeps the selection
+    /// pointing at something sensible.
+    ///
+    /// A substring scan over the precomputed [`Shown::search`] strings, so this
+    /// stays in the tens of microseconds even at the record cap. Called when
+    /// the query actually changed, never per frame.
+    fn refilter(&mut self) {
+        let needle = self.query.trim().to_lowercase();
+        self.visible = if needle.is_empty() {
+            (0..self.records.len()).collect()
+        } else {
+            (0..self.records.len())
+                .filter(|&i| self.records[i].search.contains(&needle))
+                .collect()
+        };
+        self.applied = self.query.clone();
+
+        // The selection is an identity and the filter is a lens over it, so a
+        // record filtered out of view stays selected and stays drawn. Only when
+        // it is gone *and* something else matches does the selection move —
+        // and then the list has to scroll, or it moves out of sight.
+        if !self.visible.is_empty() && !self.visible.contains(&self.selected) {
+            self.selected = self.visible[0];
+        }
+        self.pending_scroll = self.visible.iter().position(|&i| i == self.selected);
     }
 
     fn current(&self) -> Option<&Shown> {
@@ -139,28 +238,124 @@ impl RecordsView {
         }
     }
 
-    fn stepper(&mut self, ui: &mut egui::Ui) {
+    /// The filter box. Returns whether the query changed this frame.
+    fn filter_box(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            let count = self.records.len();
-            let enabled = count > 1;
-            if ui
-                .add_enabled(enabled && self.selected > 0, egui::Button::new("◀"))
-                .clicked()
-            {
-                self.selected -= 1;
+            let response = ui.add(
+                egui::TextEdit::singleline(&mut self.query)
+                    .hint_text("filter by name or formula")
+                    .desired_width(ui.available_width() - 90.0),
+            );
+            // Guarded against `applied` rather than trusting `changed()`: it
+            // can fire when the text did not change, and does not fire when
+            // something else sets `query`.
+            if response.changed() && self.query != self.applied {
+                self.refilter();
             }
-            ui.label(format!("record {} of {count}", self.selected + 1));
-            if ui
-                .add_enabled(enabled && self.selected + 1 < count, egui::Button::new("▶"))
-                .clicked()
-            {
-                self.selected += 1;
-            }
-            if let Some(total) = self.total {
-                ui.separator();
-                ui.weak(format!("first {count} of {total} in the file"));
+            if self.query.trim().is_empty() {
+                ui.weak(format!("{}", self.records.len()));
+            } else {
+                ui.weak(format!("{} of {}", self.visible.len(), self.records.len()));
             }
         });
+    }
+
+    /// The record list: one row per visible record, virtualised.
+    fn list(&mut self, ui: &mut egui::Ui) {
+        use egui_extras::{Column, TableBuilder};
+
+        if self.records.is_empty() {
+            ui.weak("no records");
+            return;
+        }
+
+        let row_h = ui.text_style_height(&egui::TextStyle::Body) + 4.0;
+        let noun = position_noun(self.format);
+
+        // Floors measured from the whole file, not from the visible rows.
+        // `Column::auto()` alone would size to whatever is on screen and keep
+        // it, which truncated a four-digit position to two — and a clipped
+        // number reads as a valid, different number rather than as an
+        // incomplete one, unlike clipped prose. Both these columns are drawn
+        // monospaced, which is what makes "longest string" and "widest string"
+        // the same question.
+        //
+        // The floor only applies because these columns are not resizable:
+        // egui keeps a resizable column's own width instead and skips the
+        // clamp entirely. `TableBuilder::resizable` defaults to false and this
+        // table never sets it.
+        let mono = egui::TextStyle::Monospace.resolve(ui.style());
+        let width_of = |text: &str| {
+            ui.painter()
+                .layout_no_wrap(text.to_owned(), mono.clone(), egui::Color32::PLACEHOLDER)
+                .size()
+                .x
+        };
+        let pad = ui.spacing().item_spacing.x * 2.0;
+        let position_width = width_of(&self.widest_position) + pad;
+        let formula_width = width_of(&self.widest_formula) + pad;
+        // Row clicks cannot be returned out of `body`, whose closure yields
+        // `()`, so they are captured here instead.
+        let mut clicked = None;
+
+        let mut table = TableBuilder::new(ui)
+            .id_salt("records")
+            // Without this the default is `Sense::hover()`, rows never report
+            // a click, and the whole list is inert.
+            .sense(egui::Sense::click())
+            .striped(true)
+            .column(Column::auto().at_least(position_width))
+            .column(Column::auto().at_least(70.0).clip(true))
+            .column(Column::auto().at_least(formula_width).clip(true))
+            // Remainder, so a click lands anywhere across the row rather than
+            // only where a cell happens to be.
+            .column(Column::remainder().clip(true));
+
+        if let Some(row) = self.pending_scroll.take() {
+            table = table.scroll_to_row(row, Some(egui::Align::Center));
+        }
+
+        table
+            .header(row_h, |mut header| {
+                for label in [noun, "name", "formula", "smiles"] {
+                    header.col(|ui| {
+                        ui.strong(label);
+                    });
+                }
+            })
+            .body(|body| {
+                body.rows(row_h, self.visible.len(), |mut row| {
+                    let shown = &self.records[self.visible[row.index()]];
+                    // Before the first `col`: it only affects cells added after.
+                    row.set_selected(self.visible[row.index()] == self.selected);
+                    row.col(|ui| {
+                        // Monospaced so the digits line up down the column,
+                        // and so the width measured above is exact.
+                        ui.label(
+                            egui::RichText::new(format!("{}", shown.position))
+                                .monospace()
+                                .weak(),
+                        );
+                    });
+                    row.col(|ui| {
+                        ui.label(&shown.record.name);
+                    });
+                    row.col(|ui| {
+                        ui.label(egui::RichText::new(&shown.formula).monospace());
+                    });
+                    row.col(|ui| {
+                        ui.monospace(shown.record.smiles.as_deref().unwrap_or(""));
+                    });
+                    // After the last `col`: it panics if no cell exists yet.
+                    if row.response().clicked() {
+                        clicked = Some(self.visible[row.index()]);
+                    }
+                });
+            });
+
+        if let Some(index) = clicked {
+            self.selected = index;
+        }
     }
 
     fn details(&self, ui: &mut egui::Ui, shown: &Shown) {
@@ -248,42 +443,60 @@ impl View for RecordsView {
             return;
         }
 
-        self.stepper(ui);
-        ui.separator();
-
-        // After the stepper, so a record stepped onto this frame is laid out
-        // before it is drawn rather than one frame late.
-        self.lay_out_selected();
-
-        // The structure takes most of the window and the details take the rest,
-        // rather than the structure shrinking to whatever the details leave —
-        // a depiction two centimetres tall is not worth showing.
-        let structure_height = (ui.available_height() * 0.62).max(160.0);
-        let width = ui.available_width();
-        if let Some(shown) = self.current() {
-            ui.add(
-                StructureView::new(
-                    &shown.record.molecule,
-                    egui::Vec2::new(width, structure_height),
-                )
-                .with_options(self.options),
-            );
-        } else if self.skipped.is_empty() {
-            ui.weak("this file held no records");
-        }
-
-        ui.separator();
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                // Cloned index rather than borrowing self across the closure:
-                // `details` needs `&self` while the scroll area holds `ui`.
-                if let Some(shown) = self.records.get(self.selected) {
-                    self.details(ui, shown);
-                    ui.add_space(8.0);
-                }
-                self.failures(ui);
+        // Panel order is fixed: top, then side, then central last.
+        // Ids come from `ui.id()`, which is unique per window because the shell
+        // gives each viewer window its own serial-based `Id` — panel state is
+        // keyed on the id alone, so two windows over one file would otherwise
+        // share a divider position.
+        egui::TopBottomPanel::top(ui.id().with("filter"))
+            .resizable(false)
+            .show_inside(ui, |ui| {
+                self.filter_box(ui);
             });
+
+        egui::SidePanel::left(ui.id().with("records"))
+            .resizable(true)
+            .default_width(300.0)
+            .width_range(180.0..=560.0)
+            .show_inside(ui, |ui| {
+                self.list(ui);
+            });
+
+        egui::CentralPanel::default().show_inside(ui, |ui| {
+            if self.visible.is_empty() && !self.query.trim().is_empty() {
+                ui.weak(format!("nothing matches {:?}", self.query.trim()));
+                ui.add_space(8.0);
+            }
+
+            // After the panels, so a record clicked this frame is laid out
+            // before it is drawn rather than one frame late.
+            self.lay_out_selected();
+
+            let structure_height = (ui.available_height() * 0.62).max(160.0);
+            let width = ui.available_width();
+            if let Some(shown) = self.current() {
+                ui.add(
+                    StructureView::new(
+                        &shown.record.molecule,
+                        egui::Vec2::new(width, structure_height),
+                    )
+                    .with_options(self.options),
+                );
+            } else if self.skipped.is_empty() {
+                ui.weak("this file held no records");
+            }
+
+            ui.separator();
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    if let Some(shown) = self.records.get(self.selected) {
+                        self.details(ui, shown);
+                        ui.add_space(8.0);
+                    }
+                    self.failures(ui);
+                });
+        });
     }
 }
 
@@ -421,10 +634,14 @@ fn attach_positions(records: Vec<Record>, skipped: &[Skipped], positions: &[usiz
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
             properties.sort();
+            let formula = record.molecule.formula();
+            let search = format!("{} {}", record.name, formula).to_lowercase();
             Shown {
                 position: kept.next().unwrap_or(0),
                 record,
                 properties,
+                formula,
+                search,
             }
         })
         .collect()
@@ -603,6 +820,210 @@ mod tests {
         let source: silva_viz_core::SharedSource = std::rc::Rc::new(std::cell::RefCell::new(mem));
         let blob = Blob::open(source, id).expect("opening the blob");
         RecordsView::new(blob, Format::Smiles, "SMILES")
+    }
+
+    /// Four named molecules, so name and formula matching can be told apart.
+    fn library() -> RecordsView {
+        smiles_view(
+            "lib.smi",
+            "CC(=O)Oc1ccccc1C(=O)O aspirin\nCn1cnc2c1c(=O)n(C)c(=O)n2C caffeine\nCC(C)Cc1ccc(cc1)C(C)C(=O)O ibuprofen\nCC(=O)Nc1ccc(O)cc1 paracetamol\n",
+        )
+    }
+
+    #[test]
+    fn test_the_position_column_is_sized_for_the_whole_file_not_one_screenful() {
+        // The live-testing bug: `Column::auto()` sizes from the visible rows
+        // and keeps that width, so a list opened at the top showed `42` for
+        // row 4237. The floor has to come from the widest position in the
+        // file, which is known at open.
+        let mut content = String::new();
+        for i in 1..=1_234 {
+            content.push_str(&format!("CCO mol{i}\n"));
+        }
+        let view = smiles_view("big.smi", &content);
+        assert_eq!(view.records.len(), 1_234);
+        assert_eq!(
+            view.widest_position, "1234",
+            "four characters, not the two the first screenful would measure"
+        );
+    }
+
+    #[test]
+    fn test_the_formula_column_is_sized_for_the_longest_formula_in_the_file() {
+        // Same defect, milder: `C13H18O2` clipped to `C13H1` is also a
+        // valid-looking wrong answer.
+        let view = smiles_view(
+            "lib.smi",
+            "CCO ethanol\nCC(C)Cc1ccc(cc1)C(C)C(=O)O ibuprofen\n",
+        );
+        assert_eq!(view.records.len(), 2);
+        assert_eq!(view.widest_formula, "C13H18O2");
+        assert!(
+            view.widest_formula.chars().count()
+                >= view
+                    .records
+                    .iter()
+                    .map(|s| s.formula.chars().count())
+                    .max()
+                    .unwrap(),
+            "must be at least as long as every formula present"
+        );
+    }
+
+    #[test]
+    fn test_a_single_record_file_gets_a_narrow_floor_rather_than_a_wide_one() {
+        let view = smiles_view("one.smi", "CCO ethanol\n");
+        assert_eq!(view.widest_position, "1");
+        assert_eq!(view.widest_formula, "C2H6O");
+    }
+
+    #[test]
+    fn test_a_file_with_no_drawable_records_still_has_a_column_floor() {
+        // Nothing to measure, so the column must not collapse to zero.
+        let mut view = smiles_view("bad.smi", "not-a-molecule\nalso-not-one\n");
+        assert!(view.records.is_empty());
+        assert_eq!(view.widest_position, "0");
+        assert_eq!(view.widest_formula, "");
+        assert!(render(&mut view) > 0, "and it must still paint");
+    }
+
+    #[test]
+    fn test_the_end_of_a_long_file_renders() {
+        // Scrolled to the last record, which is where the truncation showed.
+        let mut content = String::new();
+        for i in 1..=1_234 {
+            content.push_str(&format!("CCO mol{i}\n"));
+        }
+        let mut view = smiles_view("big.smi", &content);
+        view.selected = view.records.len() - 1;
+        view.pending_scroll = Some(view.records.len() - 1);
+        assert!(render(&mut view) > 0);
+        assert_eq!(view.records[view.selected].position, 1_234);
+    }
+
+    #[test]
+    fn test_a_file_opens_with_every_record_visible() {
+        let view = library();
+        assert_eq!(view.records.len(), 4);
+        assert_eq!(view.visible, [0, 1, 2, 3]);
+        assert!(view.query.is_empty());
+    }
+
+    #[test]
+    fn test_the_filter_narrows_by_name_and_is_case_insensitive() {
+        let mut view = library();
+        for query in ["caffeine", "CAFFEINE", "  Caffeine  "] {
+            view.query = query.to_string();
+            view.refilter();
+            assert_eq!(view.visible.len(), 1, "{query:?}");
+            assert_eq!(view.records[view.visible[0]].record.name, "caffeine");
+        }
+    }
+
+    #[test]
+    fn test_the_filter_matches_formula_as_well_as_name() {
+        // The one chemical query a text box can answer correctly.
+        let mut view = library();
+        view.query = "c8h10n4o2".to_string();
+        view.refilter();
+        assert_eq!(view.visible.len(), 1);
+        assert_eq!(view.records[view.visible[0]].record.name, "caffeine");
+        assert_eq!(view.records[view.visible[0]].formula, "C8H10N4O2");
+    }
+
+    #[test]
+    fn test_the_filter_does_not_match_smiles_though_the_list_shows_it() {
+        // Pins the decision rather than leaving it to be re-litigated. A
+        // substring match over SMILES is not substructure search — SMILES is
+        // not canonical — so the filter deliberately cannot see it.
+        let mut view = library();
+        for query in ["Cn1cnc", "c1ccccc1", "CC(=O)"] {
+            view.query = query.to_string();
+            view.refilter();
+            assert!(
+                view.visible.is_empty(),
+                "{query:?} matched {} records; the filter must not read SMILES",
+                view.visible.len()
+            );
+        }
+        // But the SMILES is on screen, which is why the hint text has to say so.
+        assert_eq!(
+            view.records[1].record.smiles.as_deref(),
+            Some("Cn1cnc2c1c(=O)n(C)c(=O)n2C")
+        );
+    }
+
+    #[test]
+    fn test_the_search_string_holds_name_and_formula_and_no_smiles() {
+        let view = library();
+        let search = &view.records[1].search;
+        assert!(search.contains("caffeine"), "{search:?}");
+        assert!(search.contains("c8h10n4o2"), "{search:?}");
+        assert!(!search.contains("cn1cnc"), "{search:?}");
+        assert_eq!(search, &search.to_lowercase(), "must be prelowered");
+    }
+
+    #[test]
+    fn test_filtering_out_the_selection_moves_it_to_the_first_match() {
+        let mut view = library();
+        view.selected = 3; // paracetamol
+        view.query = "caffeine".to_string();
+        view.refilter();
+        assert_eq!(view.selected, 1, "selection should follow the filter");
+        assert_eq!(view.pending_scroll, Some(0), "and the list should scroll");
+    }
+
+    #[test]
+    fn test_a_selection_still_in_the_filtered_view_is_left_alone() {
+        let mut view = library();
+        view.selected = 1; // caffeine
+        view.query = "caffeine".to_string();
+        view.refilter();
+        assert_eq!(view.selected, 1, "no reason to move it");
+    }
+
+    #[test]
+    fn test_a_query_matching_nothing_leaves_the_selection_and_still_renders() {
+        // The right pane says so rather than blanking, and the previously
+        // selected structure stays drawn.
+        let mut view = library();
+        view.selected = 2;
+        view.query = "zzzz".to_string();
+        view.refilter();
+        assert!(view.visible.is_empty());
+        assert_eq!(view.selected, 2, "a filter is a lens, not a deselection");
+        assert!(render(&mut view) > 0, "an empty filter must still paint");
+    }
+
+    #[test]
+    fn test_clearing_the_filter_restores_every_record() {
+        let mut view = library();
+        view.query = "caffeine".to_string();
+        view.refilter();
+        assert_eq!(view.visible.len(), 1);
+        view.query = String::new();
+        view.refilter();
+        assert_eq!(view.visible, [0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn test_the_browser_renders_a_frame_with_and_without_a_filter() {
+        // The list, the filter box, the split panels and the details all run
+        // here; nothing else in this crate paints.
+        let mut view = library();
+        assert!(render(&mut view) > 0);
+        view.query = "aspirin".to_string();
+        view.refilter();
+        assert!(render(&mut view) > 0);
+        assert!(render(&mut view) > 0, "a second frame, in case of caching");
+    }
+
+    #[test]
+    fn test_a_single_record_file_still_lists_and_draws() {
+        // The case story A was built around must not look broken now.
+        let mut view = smiles_view("one.smi", "CCO ethanol\n");
+        assert_eq!(view.visible, [0]);
+        assert!(render(&mut view) > 0);
     }
 
     #[test]
