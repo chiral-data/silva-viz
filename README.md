@@ -62,7 +62,9 @@ and never by accident.
 
 A viewer is a `ViewerFactory` and a `View`, and the built-in ones have no
 privileged access to the shell — they are registered exactly the way yours
-would be. See [`docs/viewers.md`](docs/viewers.md); it is about thirty lines.
+would be. [`docs/viewers.md`](docs/viewers.md) has the whole of a working
+viewer in one listing, then the two things that are not obvious: how to choose
+a bid priority, and where to keep a setting a user can change.
 
 ## Layout
 

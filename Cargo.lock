@@ -3157,7 +3157,7 @@ dependencies = [
 
 [[package]]
 name = "silva-viz-app"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "console_error_panic_hook",
@@ -3178,7 +3178,7 @@ dependencies = [
 
 [[package]]
 name = "silva-viz-chem"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chem",
  "egui",
@@ -3188,7 +3188,7 @@ dependencies = [
 
 [[package]]
 name = "silva-viz-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "egui",
  "pollster",
