@@ -87,6 +87,16 @@ pub struct RecordsView {
     applied: String,
     /// Indices into [`Self::records`], in file order, that the filter admits.
     visible: Vec<usize>,
+    /// The widest value each measured column has to fit, kept as the string
+    /// itself so it can be measured with the font that will draw it.
+    ///
+    /// `Column::auto()` sizes from the *currently visible* rows — its own
+    /// documentation says so — and then keeps that width, so a list opened at
+    /// the top sized its position column for `40` and still showed `42` for
+    /// row 4237. The widest value is known at open; nothing about it depends on
+    /// where the user has scrolled to.
+    widest_position: String,
+    widest_formula: String,
     /// A row to bring into view on the next frame, then forget.
     ///
     /// Needed because reconciling the selection can move it somewhere the user
@@ -110,6 +120,8 @@ impl RecordsView {
             query: String::new(),
             applied: String::new(),
             visible: Vec::new(),
+            widest_position: String::new(),
+            widest_formula: String::new(),
             pending_scroll: None,
         };
 
@@ -155,6 +167,25 @@ impl RecordsView {
         // No query yet, so everything is visible. Set after the zero-atom
         // partition above, or the indices would point at records that moved.
         view.visible = (0..view.records.len()).collect();
+
+        // Measured once, from the whole file rather than from one screenful.
+        // A `0` floor for an empty file keeps the column from collapsing.
+        view.widest_position = view
+            .records
+            .iter()
+            .map(|shown| shown.position)
+            .max()
+            .unwrap_or(0)
+            .to_string();
+        // Longest by characters is exactly the widest here, because both these
+        // columns are drawn monospaced — see `list`.
+        view.widest_formula = view
+            .records
+            .iter()
+            .map(|shown| shown.formula.as_str())
+            .max_by_key(|formula| formula.chars().count())
+            .unwrap_or("")
+            .to_string();
 
         view
     }
@@ -240,6 +271,29 @@ impl RecordsView {
 
         let row_h = ui.text_style_height(&egui::TextStyle::Body) + 4.0;
         let noun = position_noun(self.format);
+
+        // Floors measured from the whole file, not from the visible rows.
+        // `Column::auto()` alone would size to whatever is on screen and keep
+        // it, which truncated a four-digit position to two — and a clipped
+        // number reads as a valid, different number rather than as an
+        // incomplete one, unlike clipped prose. Both these columns are drawn
+        // monospaced, which is what makes "longest string" and "widest string"
+        // the same question.
+        //
+        // The floor only applies because these columns are not resizable:
+        // egui keeps a resizable column's own width instead and skips the
+        // clamp entirely. `TableBuilder::resizable` defaults to false and this
+        // table never sets it.
+        let mono = egui::TextStyle::Monospace.resolve(ui.style());
+        let width_of = |text: &str| {
+            ui.painter()
+                .layout_no_wrap(text.to_owned(), mono.clone(), egui::Color32::PLACEHOLDER)
+                .size()
+                .x
+        };
+        let pad = ui.spacing().item_spacing.x * 2.0;
+        let position_width = width_of(&self.widest_position) + pad;
+        let formula_width = width_of(&self.widest_formula) + pad;
         // Row clicks cannot be returned out of `body`, whose closure yields
         // `()`, so they are captured here instead.
         let mut clicked = None;
@@ -250,9 +304,9 @@ impl RecordsView {
             // a click, and the whole list is inert.
             .sense(egui::Sense::click())
             .striped(true)
-            .column(Column::auto())
+            .column(Column::auto().at_least(position_width))
             .column(Column::auto().at_least(70.0).clip(true))
-            .column(Column::auto().at_least(60.0).clip(true))
+            .column(Column::auto().at_least(formula_width).clip(true))
             // Remainder, so a click lands anywhere across the row rather than
             // only where a cell happens to be.
             .column(Column::remainder().clip(true));
@@ -275,13 +329,19 @@ impl RecordsView {
                     // Before the first `col`: it only affects cells added after.
                     row.set_selected(self.visible[row.index()] == self.selected);
                     row.col(|ui| {
-                        ui.weak(format!("{}", shown.position));
+                        // Monospaced so the digits line up down the column,
+                        // and so the width measured above is exact.
+                        ui.label(
+                            egui::RichText::new(format!("{}", shown.position))
+                                .monospace()
+                                .weak(),
+                        );
                     });
                     row.col(|ui| {
                         ui.label(&shown.record.name);
                     });
                     row.col(|ui| {
-                        ui.label(&shown.formula);
+                        ui.label(egui::RichText::new(&shown.formula).monospace());
                     });
                     row.col(|ui| {
                         ui.monospace(shown.record.smiles.as_deref().unwrap_or(""));
@@ -768,6 +828,77 @@ mod tests {
             "lib.smi",
             "CC(=O)Oc1ccccc1C(=O)O aspirin\nCn1cnc2c1c(=O)n(C)c(=O)n2C caffeine\nCC(C)Cc1ccc(cc1)C(C)C(=O)O ibuprofen\nCC(=O)Nc1ccc(O)cc1 paracetamol\n",
         )
+    }
+
+    #[test]
+    fn test_the_position_column_is_sized_for_the_whole_file_not_one_screenful() {
+        // The live-testing bug: `Column::auto()` sizes from the visible rows
+        // and keeps that width, so a list opened at the top showed `42` for
+        // row 4237. The floor has to come from the widest position in the
+        // file, which is known at open.
+        let mut content = String::new();
+        for i in 1..=1_234 {
+            content.push_str(&format!("CCO mol{i}\n"));
+        }
+        let view = smiles_view("big.smi", &content);
+        assert_eq!(view.records.len(), 1_234);
+        assert_eq!(
+            view.widest_position, "1234",
+            "four characters, not the two the first screenful would measure"
+        );
+    }
+
+    #[test]
+    fn test_the_formula_column_is_sized_for_the_longest_formula_in_the_file() {
+        // Same defect, milder: `C13H18O2` clipped to `C13H1` is also a
+        // valid-looking wrong answer.
+        let view = smiles_view(
+            "lib.smi",
+            "CCO ethanol\nCC(C)Cc1ccc(cc1)C(C)C(=O)O ibuprofen\n",
+        );
+        assert_eq!(view.records.len(), 2);
+        assert_eq!(view.widest_formula, "C13H18O2");
+        assert!(
+            view.widest_formula.chars().count()
+                >= view
+                    .records
+                    .iter()
+                    .map(|s| s.formula.chars().count())
+                    .max()
+                    .unwrap(),
+            "must be at least as long as every formula present"
+        );
+    }
+
+    #[test]
+    fn test_a_single_record_file_gets_a_narrow_floor_rather_than_a_wide_one() {
+        let view = smiles_view("one.smi", "CCO ethanol\n");
+        assert_eq!(view.widest_position, "1");
+        assert_eq!(view.widest_formula, "C2H6O");
+    }
+
+    #[test]
+    fn test_a_file_with_no_drawable_records_still_has_a_column_floor() {
+        // Nothing to measure, so the column must not collapse to zero.
+        let mut view = smiles_view("bad.smi", "not-a-molecule\nalso-not-one\n");
+        assert!(view.records.is_empty());
+        assert_eq!(view.widest_position, "0");
+        assert_eq!(view.widest_formula, "");
+        assert!(render(&mut view) > 0, "and it must still paint");
+    }
+
+    #[test]
+    fn test_the_end_of_a_long_file_renders() {
+        // Scrolled to the last record, which is where the truncation showed.
+        let mut content = String::new();
+        for i in 1..=1_234 {
+            content.push_str(&format!("CCO mol{i}\n"));
+        }
+        let mut view = smiles_view("big.smi", &content);
+        view.selected = view.records.len() - 1;
+        view.pending_scroll = Some(view.records.len() - 1);
+        assert!(render(&mut view) > 0);
+        assert_eq!(view.records[view.selected].position, 1_234);
     }
 
     #[test]
