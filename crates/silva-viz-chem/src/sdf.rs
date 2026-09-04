@@ -4,7 +4,7 @@
 
 //! MDL molfiles and SDF, recognised by their counts line.
 
-use crate::records::{RecordsView, SDF_LIMIT};
+use crate::records::{RecordsView, SIZE_LIMIT};
 use chem::io::reader::Format;
 use silva_viz_core::{Blob, Claim, FileProbe, View, ViewerFactory};
 
@@ -20,10 +20,10 @@ const COUNTS_LINE: usize = 3;
 /// can say *why* it declined is one a metadata viewer can quote, so a short
 /// "Open in" menu stops being a mystery.
 pub fn verdict(probe: &FileProbe<'_>) -> Result<(), String> {
-    if probe.size() > SDF_LIMIT {
+    if probe.size() > SIZE_LIMIT {
         return Err(format!(
             "larger than the {} MiB limit",
-            SDF_LIMIT / (1024 * 1024)
+            SIZE_LIMIT / (1024 * 1024)
         ));
     }
     if probe.has_nul() {
@@ -114,7 +114,7 @@ mod tests {
 
     #[test]
     fn test_a_molfile_past_the_ceiling_is_left_to_the_hex_viewer() {
-        let big = FileProbe::new("enormous.sdf", METHANE, SDF_LIMIT + 1);
+        let big = FileProbe::new("enormous.sdf", METHANE, SIZE_LIMIT + 1);
         assert!(SdfFactory.claim(&big).is_none());
     }
 

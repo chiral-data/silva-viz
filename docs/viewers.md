@@ -1,6 +1,6 @@
 # Writing a viewer
 
-A viewer is two traits. Nothing in the shell is special-cased for the five that
+A viewer is two traits. Nothing in the shell is special-cased for the ones that
 ship — `app.rs` registers them through the same call your crate would use, and
 if that ever stops being true it will show up here first.
 
@@ -78,15 +78,36 @@ Priority only means something relative to the other bids. The scale in use:
 
 | priority | who | why |
 | --- | --- | --- |
-| `20` | image | recognised from magic bytes, so the evidence is strong |
+| `20` | image, SDF | recognised from magic bytes or a counts line — strong evidence |
+| `15` | SMILES | named `.smi`, *and* something in the first lines parses |
 | `10` | table | a delimiter the first five lines agree on |
 | `0` | text | valid UTF-8 under 8 MiB — true of a great many files |
+| `-50` | SMILES | not named like one, but the first lines are plainly molecules |
 | `-100` | hex | the floor; bids on everything so nothing is un-openable |
 | `-200` | metadata | never the default, always available |
 
 Bid above `0` when you recognised the format rather than merely tolerated it.
 Ties keep registration order, so two viewers at the same priority stay in a
 stable order in the menu rather than swapping between files.
+
+### A negative bid is not a refusal
+
+Two rows there are the same viewer, and the pair is worth copying when you hit
+the same problem. SMILES has no magic bytes — `CCO` is a molecule and also
+three letters — so the viewer has to read the filename, which is the thing this
+whole design avoids. Bidding twice is what makes that tolerable:
+
+- Named `.smi` and at least one parsing line: `15`, above the table viewer, so
+  a tab-separated `.smi` opens as structures rather than as columns.
+- Not named like one, but the first few lines are *all* molecules of more than
+  one atom: `-50`. Below `text`, so a double-click still opens text; above the
+  hex floor, so it is not buried. It appears in *Open in* and nowhere else.
+
+The second bid costs a menu entry and buys the ability to open a `results.txt`
+full of SMILES on purpose. Returning `None` there would have been the honest
+answer to "is this mine?" and the wrong answer to "could the user want this?".
+Reach for a negative priority when your format is real but your evidence is
+circumstantial.
 
 ## Reading the file
 

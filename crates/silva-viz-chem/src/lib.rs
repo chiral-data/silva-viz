@@ -18,10 +18,12 @@
 
 pub mod records;
 pub mod sdf;
+pub mod smiles;
 pub mod structure;
 
 pub use records::RecordsView;
 pub use sdf::SdfFactory;
+pub use smiles::SmilesFactory;
 pub use structure::{StructureView, theme_from_visuals};
 
 /// Registers every viewer this crate provides.
@@ -32,5 +34,9 @@ pub use structure::{StructureView, theme_from_visuals};
 pub fn register(
     registry: &mut silva_viz_core::ViewerRegistry,
 ) -> &mut silva_viz_core::ViewerRegistry {
-    registry.register(Box::new(SdfFactory))
+    // Worst bid first, the way the "Open in" menu falls back: SMILES may bid
+    // negative for a file that merely parses, SDF only ever bids 20.
+    registry
+        .register(Box::new(SmilesFactory))
+        .register(Box::new(SdfFactory))
 }

@@ -32,16 +32,20 @@ cd crates/silva-viz-app && trunk serve   # http://127.0.0.1:8080
   lowest priority and pages through the file, so a 3 GB blob opens as fast as a
   3 KB one.
 
-Six viewers ship: metadata, hex, text, delimited table, image (PNG, JPEG, GIF,
-BMP), and **molecular structures** — an MDL molfile or SDF opens as a drawn
-structure, one record at a time, with its data fields beside it.
+Seven viewers ship: metadata, hex, text, delimited table, image (PNG, JPEG,
+GIF, BMP), and two for **molecular structures** — an MDL molfile or SDF, and a
+`.smi` list of SMILES. Either opens as a drawn structure, one record at a time,
+with its details and data fields beside it.
 
-The structure viewer is the one exception to "by the bytes, never by the name",
-and only half an exception: a molfile is recognised by its *counts line*, the
-fourth line of every record, so a `.mol`, an `.sdf` and a `.txt` holding a
-molfile all open the same way. SMILES is the format with no magic bytes at all
-— `CCO` is a molecule and also three letters — and when its viewer arrives it
-will have to read the filename, which is documented where it happens.
+The structure viewers are where "by the bytes, never by the name" meets its
+limit, and they meet it differently. A molfile is recognised by its *counts
+line*, the fourth line of every record, so a `.mol`, an `.sdf` and a `.txt`
+holding a molfile all open alike. SMILES has no magic bytes at all — `CCO` is a
+molecule and also three letters — so that viewer is the only one here that
+reads a filename. Two things keep it honest: the extension is necessary but not
+sufficient, and a file that plainly parses without the name is offered under
+right-click → *Open in* at a negative priority, so it can be opened on purpose
+and never by accident.
 
 ## Adding a viewer
 
@@ -55,7 +59,7 @@ would be. See [`docs/viewers.md`](docs/viewers.md); it is about thirty lines.
 | --- | --- |
 | `silva-viz-core` | the seam: `FileSource`, `ViewerFactory`, `View`, `Blob` |
 | `silva-viz-app` | the eframe shell and the five format-agnostic viewers |
-| `silva-viz-chem` | the structure viewers, built on [`chem`](https://crates.io/crates/chem) |
+| `silva-viz-chem` | the SDF and SMILES viewers, built on [`chem`](https://crates.io/crates/chem) |
 
 `silva-viz-chem` is a downstream crate registered through the same call a
 third-party one would use, and CI pins the other half of that claim:
