@@ -34,8 +34,15 @@ cd crates/silva-viz-app && trunk serve   # http://127.0.0.1:8080
 
 Seven viewers ship: metadata, hex, text, delimited table, image (PNG, JPEG,
 GIF, BMP), and two for **molecular structures** — an MDL molfile or SDF, and a
-`.smi` list of SMILES. Either opens as a drawn structure, one record at a time,
-with its details and data fields beside it.
+`.smi` list of SMILES. Either opens as a **record browser**: a scrollable,
+filterable list of the file's records on one side, the selected structure and
+its details on the other, with a divider you can drag. The list is virtualised,
+so a twenty-thousand-record library costs the same to scroll as a two-record
+one.
+
+The filter matches names and formulas — not the SMILES column, deliberately,
+because a text match over SMILES is not a substructure search and should not
+look like one.
 
 The structure viewers are where "by the bytes, never by the name" meets its
 limit, and they meet it differently. A molfile is recognised by its *counts
