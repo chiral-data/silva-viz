@@ -730,9 +730,9 @@ dependencies = [
 
 [[package]]
 name = "chem"
-version = "0.6.0"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "143da26bbe95f32aaa8bb9d1f7018b8f6d24d7a5234d8608ba6378a8f9885783"
+checksum = "b58e90bd78f161cd95e2b8243ee826aad88ffbe73cd28a0407954cfbad45ee3b"
 dependencies = [
  "anyhow",
  "bitvec",

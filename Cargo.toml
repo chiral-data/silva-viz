@@ -24,7 +24,15 @@ ecolor = "0.33.3"
 # SMILES/SDF reading, and a depiction layer that emits drawable primitives
 # rather than widgets. Default features only — `gpu` would pull `wgpu`, which
 # the web build cannot have and no viewer here needs.
-chem = { version = "0.6", default-features = false }
+#
+# 0.6.1 rather than 0.6 as the floor, deliberately. In 0.6.0 the SMILES
+# tokenizer read bare two-letter element symbols, which the grammar allows
+# only for `Cl` and `Br` — so `Cn` was copernicium, and caffeine written the
+# ordinary way parsed as a 13-atom `C7H7CnN3O2` at 450 g/mol, returned as
+# `Ok`. The SDF viewer never calls that parser, but the SMILES viewer will,
+# and a resolver free to pick 0.6.0 would draw the wrong molecule with nothing
+# on screen to say so. Fixed in chiral-data/rust-chem#203.
+chem = { version = "0.6.1", default-features = false }
 
 anyhow = "1.0"
 thiserror = "2.0.17"
