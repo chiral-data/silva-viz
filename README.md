@@ -44,6 +44,10 @@ The filter matches names and formulas — not the SMILES column, deliberately,
 because a text match over SMILES is not a substructure search and should not
 look like one.
 
+How structures are drawn — which carbons are labelled, whether atoms are
+symbols or coloured dots, whether stored hydrogens appear — is adjustable per
+window, shared by every window, and remembered between sessions.
+
 The structure viewers are where "by the bytes, never by the name" meets its
 limit, and they meet it differently. A molfile is recognised by its *counts
 line*, the fourth line of every record, so a `.mol`, an `.sdf` and a `.txt`

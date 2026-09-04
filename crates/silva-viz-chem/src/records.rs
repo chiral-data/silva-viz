@@ -10,7 +10,6 @@
 //! `.smi` viewer adds a factory rather than a second copy of this.
 
 use crate::structure::StructureView;
-use chem::draw::StructureOptions;
 use chem::io::reader::{self, Format, Record, Skipped};
 use silva_viz_core::{Blob, View};
 
@@ -70,9 +69,6 @@ pub struct RecordsView {
     /// A failure to read the bytes at all, which is not the same as a file
     /// whose records failed to parse.
     error: Option<String>,
-    /// How the structures are drawn. Fixed per format for now; story D makes
-    /// it adjustable and persists it.
-    options: StructureOptions,
     /// Kept only to label positions, which are counted differently per format.
     format: Format,
     /// What is in the filter box.
@@ -115,7 +111,6 @@ impl RecordsView {
             selected: 0,
             total: None,
             error: None,
-            options: options_for(format),
             format,
             query: String::new(),
             applied: String::new(),
@@ -480,7 +475,7 @@ impl View for RecordsView {
                         &shown.record.molecule,
                         egui::Vec2::new(width, structure_height),
                     )
-                    .with_options(self.options),
+                    .with_options(crate::options::shared(ui.ctx())),
                 );
             } else if self.skipped.is_empty() {
                 ui.weak("this file held no records");
@@ -495,28 +490,17 @@ impl View for RecordsView {
                         ui.add_space(8.0);
                     }
                     self.failures(ui);
+                    ui.add_space(8.0);
+                    // Closed by default: the details and the failure list are
+                    // what someone opens a window for, and these are a thing
+                    // you go and find once. Shared with every other open
+                    // structure — see `crate::options`.
+                    egui::CollapsingHeader::new("Options")
+                        .default_open(false)
+                        .show(ui, crate::options::controls);
                 });
         });
     }
-}
-
-/// The depiction options a format opens with.
-///
-/// An SDF carries hydrogens as real atoms in the graph, and drawing every one
-/// of them buries the skeleton the structure exists to show — a benzene ring
-/// becomes twelve vertices instead of six. `chem`'s own field documentation
-/// recommends against it for exactly this format. SMILES leaves hydrogens
-/// implicit, so the flag has nothing to hide there and `chem`'s default
-/// stands.
-///
-/// Hidden atoms take their bonds with them, so this removes the H labels and
-/// their bonds together rather than leaving strokes pointing at nothing.
-fn options_for(format: Format) -> StructureOptions {
-    let mut options = StructureOptions::default();
-    if matches!(format, Format::Sdf) {
-        options.explicit_hydrogens = false;
-    }
-    options
 }
 
 /// The file text cut to at most `max` records, and how many it actually held.
@@ -696,7 +680,14 @@ mod tests {
     /// Runs one frame of a view the way the shell would, and returns how many
     /// shapes it painted — so "it did not panic" is joined by "it drew".
     fn render(view: &mut RecordsView) -> usize {
-        let ctx = egui::Context::default();
+        render_in(&egui::Context::default(), view)
+    }
+
+    /// The same, in a caller-supplied context.
+    ///
+    /// Needed wherever a test spans two frames: the shared structure options
+    /// live in the `Context`, so a fresh one per frame would forget them.
+    fn render_in(ctx: &egui::Context, view: &mut RecordsView) -> usize {
         let output = ctx.run(egui::RawInput::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| view.ui(ui));
         });
@@ -772,48 +763,6 @@ mod tests {
         0.0000   -1.0000    0.0000 H   0  0\n  1  2  1  0\n  1  3  1  0\n  1  4  1  0\n\
       1  5  1  0\nM  END\n$$$$\n";
 
-    #[test]
-    fn test_an_sdf_hides_the_hydrogens_it_carries_as_atoms() {
-        // Not a test that a flag holds a value — a test that the flag has its
-        // effect. An SDF stores hydrogens explicitly, and drawing all of them
-        // buries the skeleton, so the SDF viewer opens with them hidden.
-        let view = view_of("methane.sdf", METHANE_WITH_H);
-        assert_eq!(view.records.len(), 1);
-        assert_eq!(
-            view.records[0].record.molecule.num_atoms(),
-            5,
-            "the molecule still holds every hydrogen"
-        );
-        assert!(!view.options.explicit_hydrogens);
-
-        let drawn =
-            crate::structure::describe_for_test(&view.records[0].record.molecule, &view.options);
-        let labels: Vec<&str> = drawn
-            .iter()
-            .filter_map(|s| match s {
-                chem::draw::StructureShape::Text { text, .. } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect();
-        assert!(
-            !labels.contains(&"H"),
-            "no hydrogen should be labelled: {labels:?}"
-        );
-
-        // And with them shown, they come back — so the assertion above is
-        // about the option rather than about this molecule.
-        let mut shown_options = view.options;
-        shown_options.explicit_hydrogens = true;
-        let with_h =
-            crate::structure::describe_for_test(&view.records[0].record.molecule, &shown_options);
-        assert!(
-            with_h.len() > drawn.len(),
-            "showing hydrogens must draw more: {} vs {}",
-            with_h.len(),
-            drawn.len()
-        );
-    }
-
     fn smiles_view(name: &str, content: &str) -> RecordsView {
         let mut mem = silva_viz_core::MemSource::new();
         let id = mem.add(name, content.as_bytes().to_vec());
@@ -828,6 +777,64 @@ mod tests {
             "lib.smi",
             "CC(=O)Oc1ccccc1C(=O)O aspirin\nCn1cnc2c1c(=O)n(C)c(=O)n2C caffeine\nCC(C)Cc1ccc(cc1)C(C)C(=O)O ibuprofen\nCC(=O)Nc1ccc(O)cc1 paracetamol\n",
         )
+    }
+
+    #[test]
+    fn test_the_shared_options_reach_the_drawing() {
+        // The whole path in one test: the store, the view that reads it, and
+        // `describe_structure` acting on it. An SDF stores hydrogens as real
+        // atoms, and the seed hides them, so flipping the shared value has to
+        // change what is painted — that is what would catch the options being
+        // read once and cached in the view.
+        let ctx = egui::Context::default();
+        let mut view = view_of("methane.sdf", METHANE_WITH_H);
+        assert_eq!(
+            view.records[0].record.molecule.num_atoms(),
+            5,
+            "the molecule still holds every hydrogen"
+        );
+
+        let hidden = render_in(&ctx, &mut view);
+        assert!(hidden > 0, "the first frame painted nothing");
+
+        let options = crate::options::shared(&ctx);
+        assert!(
+            !options.explicit_hydrogens,
+            "the seed must keep hydrogens off, as `options_for` used to"
+        );
+        // No `H` label with them off, checked against the description rather
+        // than the shape count, so the assertion names what it means.
+        let labels = |options: &chem::draw::StructureOptions| -> Vec<String> {
+            crate::structure::describe_for_test(&view.records[0].record.molecule, options)
+                .iter()
+                .filter_map(|s| match s {
+                    chem::draw::StructureShape::Text { text, .. } => Some(text.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert!(
+            !labels(&options).contains(&"H".to_string()),
+            "{:?}",
+            labels(&options)
+        );
+
+        let mut shown = options;
+        shown.explicit_hydrogens = true;
+        crate::options::set_shared(&ctx, shown);
+        assert!(
+            labels(&shown).contains(&"H".to_string()),
+            "{:?}",
+            labels(&shown)
+        );
+
+        // And the view picks the change up, in the same context, without being
+        // rebuilt — which is the part the description check cannot show.
+        let with_hydrogens = render_in(&ctx, &mut view);
+        assert!(
+            with_hydrogens > hidden,
+            "showing hydrogens must paint more: {with_hydrogens} vs {hidden}"
+        );
     }
 
     #[test]

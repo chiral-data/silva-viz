@@ -109,6 +109,53 @@ answer to "is this mine?" and the wrong answer to "could the user want this?".
 Reach for a negative priority when your format is real but your evidence is
 circumstantial.
 
+## Keeping state a user can change
+
+`View` is two methods and gets no application state, which is deliberate: it is
+what lets a viewer live in its own crate. So where does a setting live — one a
+user adjusts, that should apply to every window of your viewer at once, and
+that should still be there tomorrow?
+
+Not in a widened trait. Use egui's own store, which you can already reach
+through the `Ui` you are handed:
+
+```rust
+fn store_id() -> egui::Id {
+    // Namespaced, not `Id::NULL`. egui documents `NULL` as the singleton
+    // idiom, but it is a slot any crate in the tree could claim for the same
+    // type, and a collision would be silent.
+    egui::Id::new("my-viewer/options")
+}
+
+fn shared(ctx: &egui::Context) -> MyOptions {
+    ctx.data_mut(|data| *data.get_persisted_mut_or_insert_with(store_id(), MyOptions::sensible))
+}
+```
+
+The shell does this for window geometry and has since v0.1.0, so it is the
+existing mechanism rather than a new one. `silva-viz-chem`'s `options` module is
+a worked example.
+
+Four things to know before relying on it, each of which fails quietly:
+
+- **`data_mut`, not `data`, and a *persisted* accessor, not a temp one.**
+  `get_persisted` needs `&mut` because it deserialises on first read and caches.
+  `get_temp` returns `None` for a value that came off disk and has not been
+  promoted, and `get_temp_mut_or_insert_with` *overwrites* the stored value with
+  a temporary one — after which nothing persists, with no diagnostic.
+- **Seed it, do not default it.** `get_persisted_mut_or_default` falls back to
+  `Default`, so if your intended starting value is not the type's default, a
+  decode failure silently changes behaviour. `get_persisted_mut_or_insert_with`
+  makes the fallback yours.
+- **Your type needs `Clone + Serialize + Deserialize + Send + Sync + 'static`.**
+  That is `egui::util::id_type_map::SerializableAny`, and with egui's
+  `persistence` feature *off* the bound relaxes and the persisted calls quietly
+  behave like temp ones.
+- **It is remembered, not permanent.** Everything rides in one `Memory` blob
+  whose key includes a `TypeId`, so a toolchain or dependency change can re-key
+  it and any decode error discards the lot. Fine for a preference; not a place
+  to keep anything a user would be upset to lose.
+
 ## Reading the file
 
 `Blob` gives you three things:

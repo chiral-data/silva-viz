@@ -16,6 +16,7 @@
 //! backend that paints those primitives ([`structure`]), and factories that
 //! decide whether a given file is a structure file at all ([`sdf`]).
 
+pub mod options;
 pub mod records;
 pub mod sdf;
 pub mod smiles;
